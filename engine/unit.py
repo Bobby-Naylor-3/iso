@@ -14,6 +14,7 @@ class Unit:
         self.tile_h = tile_h
         self.origin = origin
         self.speed = speed_pps
+        self.overwatch = False
 
         cx, cy = tile_center(*self.grid, self.tile_w, self.tile_h, self.origin)
         self.pos_x = float(cx)
@@ -88,3 +89,14 @@ class Unit:
         cx, cy = tile_center(*self.grid, self.tile_w, self.tile_h, self.origin)
         self.pos_x = float(cx)
         self.pos_y = float(cy)
+        # --- Overwatch ---
+    def set_overwatch(self, ap_cost: int) -> bool:
+        if self.is_moving() or self.overwatch or self.ap < ap_cost:
+            return False
+        self.ap -= ap_cost
+        self.overwatch = True
+        return True
+
+    def clear_overwatch(self) -> None:
+        self.overwatch = False
+

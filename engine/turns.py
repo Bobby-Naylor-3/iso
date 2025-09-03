@@ -9,21 +9,21 @@ class TurnManager:
     def __init__(self) -> None:
         self.turn: int = 1
         self.phase: Phase = Phase.PLAYER
-        self._enemy_timer: float = 0.0  # simple placeholder for enemy turn duration
+        self._enemy_timer: float = 0.0  # unused for logic now; kept for compatibility
 
     def end_player_turn(self) -> None:
         if self.phase is Phase.PLAYER:
             self.phase = Phase.ENEMY
-            self._enemy_timer = 0.8  # seconds to "process" enemy turn
+            self._enemy_timer = 0.0
+
+    def complete_enemy_turn(self) -> None:
+        if self.phase is Phase.ENEMY:
+            self.phase = Phase.PLAYER
+            self.turn += 1
 
     def update(self, dt: float) -> bool:
         """
-        Returns True if we just transitioned back to PLAYER (new turn).
+        Legacy hook. Returns True if we just transitioned back to PLAYER (new turn).
+        Enemy completion is now controlled externally via complete_enemy_turn().
         """
-        if self.phase is Phase.ENEMY:
-            self._enemy_timer -= dt
-            if self._enemy_timer <= 0.0:
-                self.phase = Phase.PLAYER
-                self.turn += 1
-                return True
         return False

@@ -43,3 +43,10 @@ SHOOT_AP_COST = 1
 WEAPON_DMG_MIN = 2
 WEAPON_DMG_MAX = 4
 CRIT_BONUS_DMG = 2          # flat bonus on crit
+# Overwatch & enemy AI (bootstrap)
+OVERWATCH_AP_COST = 1
+OVERWATCH_AIM_MALUS = 15  # penalty applied to OW shots
+
+ENEMY_DEFAULT_HP = 3
+ENEMY_STEPS_PER_TURN = 6     # tiles per enemy per enemy phase
+ENEMY_STEP_TIME = 0.08       # seconds per enemy step (visual pacing)
