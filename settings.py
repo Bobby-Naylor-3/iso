@@ -27,3 +27,5 @@ ALLOW_DIAGONAL = False  # reserved for future; current A* uses 4-dir
 # Demo unit spawn & movement
 UNIT_SPAWN = (5, 5)
 MOVE_SPEED_PPS = 220  # pixels per second for movement animation
+# Squad spawns (grid coords)
+UNIT_SPAWNS = [(5, 5), (7, 6), (9, 8)]

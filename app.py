@@ -1,16 +1,20 @@
 from __future__ import annotations
 import sys
 import math
+from typing import List, Tuple, Optional, Dict, Set
+
 import pygame as pg
 
 import settings as S
-from engine.iso import grid_to_screen, screen_to_grid, diamond_points, tile_center
+from engine.iso import grid_to_screen, screen_to_grid, diamond_points
 from engine import colors as C
 from engine.map import TileMap
 from engine.pathfinding import a_star
 from engine.unit import Unit
 from engine.turns import TurnManager, Phase
+from engine.los import has_los
 
+Coord = Tuple[int, int]
 
 def draw_grid(surface: pg.Surface) -> None:
     for j in range(S.GRID_ROWS):
@@ -21,14 +25,12 @@ def draw_grid(surface: pg.Surface) -> None:
             pg.draw.polygon(surface, fill, poly)
             pg.draw.polygon(surface, C.OUTLINE, poly, width=1)
 
-
 def draw_obstacles(surface: pg.Surface, tmap: TileMap) -> None:
     for (i, j) in tmap.blocked:
         sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
         poly = diamond_points(sx, sy, S.TILE_W, S.TILE_H)
         pg.draw.polygon(surface, C.OBSTACLE_FILL, poly)
         pg.draw.polygon(surface, C.OBSTACLE_OUTLINE, poly, width=2)
-
 
 def draw_hover(surface: pg.Surface, mouse_pos: tuple[int, int]) -> tuple[int, int] | None:
     mx, my = mouse_pos
@@ -41,105 +43,181 @@ def draw_hover(surface: pg.Surface, mouse_pos: tuple[int, int]) -> tuple[int, in
         return (i, j)
     return None
 
-
-def draw_selection(surface: pg.Surface, selected: tuple[int, int] | None) -> None:
-    if not selected:
+def draw_selection(surface: pg.Surface, tile: tuple[int, int] | None) -> None:
+    if not tile:
         return
-    i, j = selected
+    i, j = tile
     sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
     poly = diamond_points(sx, sy, S.TILE_W, S.TILE_H)
     pg.draw.polygon(surface, C.SELECT_FILL, poly)
     pg.draw.polygon(surface, C.SELECT_OUTLINE, poly, width=2)
 
+def occupied_tiles(units: List[Unit], exclude: Optional[Unit] = None) -> Set[Coord]:
+    occ: Set[Coord] = set()
+    for u in units:
+        if exclude is not None and u is exclude:
+            continue
+        occ.add(u.grid)
+    return occ
 
-def bfs_reachable(origin: tuple[int, int], max_steps: int, tmap: TileMap) -> set[tuple[int, int]]:
+def bfs_reachable(origin: Coord, max_steps: int, tmap: TileMap, extra_blocked: Set[Coord]) -> set[Coord]:
     from collections import deque
     frontier = deque()
     frontier.append((origin, 0))
     visited = {origin}
-    reachable: set[tuple[int, int]] = set()
-
+    reachable: set[Coord] = set()
     while frontier:
         (ci, cj), d = frontier.popleft()
         if d == max_steps:
             continue
         for (ni, nj) in ((ci+1,cj), (ci-1,cj), (ci,cj+1), (ci,cj-1)):
             nc = (ni, nj)
-            if not tmap.in_bounds(nc) or not tmap.passable(nc) or nc in visited:
+            if not tmap.in_bounds(nc) or not tmap.passable(nc) or nc in extra_blocked or nc in visited:
                 continue
             visited.add(nc)
             reachable.add(nc)
             frontier.append((nc, d + 1))
     return reachable
 
-
-def draw_move_ranges(surface: pg.Surface, origin: tuple[int, int] | None, tmap: TileMap, available_ap: int) -> None:
+def draw_move_ranges(surface: pg.Surface, origin: Coord | None, tmap: TileMap, available_ap: int, occ: Set[Coord]) -> None:
     if not origin or available_ap <= 0:
         return
-
     overlay = pg.Surface(surface.get_size(), pg.SRCALPHA)
-
-    # Blue (1 AP)
-    blue = bfs_reachable(origin, S.MOVEMENT_TILES_PER_AP, tmap)
+    blue = bfs_reachable(origin, S.MOVEMENT_TILES_PER_AP, tmap, occ)
     for (i, j) in blue:
         sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
-        poly = diamond_points(sx, sy, S.TILE_W, S.TILE_H)
-        pg.draw.polygon(overlay, C.MOVE_BLUE_FILL, poly)
-        pg.draw.polygon(overlay, C.MOVE_BLUE_OUTLINE, poly, width=1)
-
-    # Yellow (2 AP) only if we have 2 AP to spend
+        pg.draw.polygon(overlay, C.MOVE_BLUE_FILL, diamond_points(sx, sy, S.TILE_W, S.TILE_H))
+        pg.draw.polygon(overlay, C.MOVE_BLUE_OUTLINE, diamond_points(sx, sy, S.TILE_W, S.TILE_H), width=1)
     if available_ap >= 2:
-        yellow = bfs_reachable(origin, S.MOVEMENT_TILES_PER_AP * 2, tmap) - blue
+        yellow = bfs_reachable(origin, S.MOVEMENT_TILES_PER_AP * 2, tmap, occ) - blue
         for (i, j) in yellow:
             sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
-            poly = diamond_points(sx, sy, S.TILE_W, S.TILE_H)
-            pg.draw.polygon(overlay, C.MOVE_YELLOW_FILL, poly)
-            pg.draw.polygon(overlay, C.MOVE_YELLOW_OUTLINE, poly, width=1)
-
+            pg.draw.polygon(overlay, C.MOVE_YELLOW_FILL, diamond_points(sx, sy, S.TILE_W, S.TILE_H))
+            pg.draw.polygon(overlay, C.MOVE_YELLOW_OUTLINE, diamond_points(sx, sy, S.TILE_W, S.TILE_H), width=1)
     surface.blit(overlay, (0, 0))
 
-
-def draw_path_preview(surface: pg.Surface, origin: tuple[int, int] | None, hovered: tuple[int, int] | None, tmap: TileMap) -> tuple[int, int] | None:
+def draw_path_preview(surface: pg.Surface, origin: Coord | None, hovered: Coord | None, tmap: TileMap, blocked: Set[Coord]) -> tuple[int, int] | None:
     if not origin or not hovered:
         return None
-    if not tmap.passable(hovered):
+    if hovered in blocked or not tmap.passable(hovered):
         return None
-
-    path = a_star(origin, hovered, S.GRID_COLS, S.GRID_ROWS, tmap.blocked)
+    path = a_star(origin, hovered, S.GRID_COLS, S.GRID_ROWS, blocked)
     if not path:
         return None
-
     max_steps = S.MOVEMENT_TILES_PER_AP * 2
     path = path[:max_steps]
-
     overlay = pg.Surface(surface.get_size(), pg.SRCALPHA)
     for (i, j) in path:
         sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
-        poly = diamond_points(sx, sy, S.TILE_W, S.TILE_H)
-        pg.draw.polygon(overlay, C.PATH_FILL, poly)
-        pg.draw.polygon(overlay, C.PATH_OUTLINE, poly, width=1)
+        pg.draw.polygon(overlay, C.PATH_FILL, diamond_points(sx, sy, S.TILE_W, S.TILE_H))
+        pg.draw.polygon(overlay, C.PATH_OUTLINE, diamond_points(sx, sy, S.TILE_W, S.TILE_H), width=1)
     surface.blit(overlay, (0, 0))
-
     steps = len(path)
     ap_cost = math.ceil(steps / S.MOVEMENT_TILES_PER_AP) if steps > 0 else 0
     return steps, ap_cost
 
-
-def draw_unit(surface: pg.Surface, u: Unit) -> None:
+def draw_unit(surface: pg.Surface, u: Unit, selected: bool) -> None:
     r = max(6, S.TILE_H // 3)
     pg.draw.circle(surface, C.UNIT_FILL, (int(u.pos_x), int(u.pos_y)), r)
     pg.draw.circle(surface, C.UNIT_OUTLINE, (int(u.pos_x), int(u.pos_y)), r, width=2)
+    if selected:
+        pg.draw.circle(surface, C.SELECT_OUTLINE, (int(u.pos_x), int(u.pos_y)), r + 3, width=2)
 
+def get_unit_at(units: List[Unit], tile: Coord) -> Optional[Unit]:
+    for u in units:
+        if u.grid == tile:
+            return u
+    return None
 
-def draw_debug(surface: pg.Surface, font: pg.font.Font, hovered: tuple[int, int] | None, unit: Unit, path_info: tuple[int, int] | None, tm: TurnManager) -> None:
+def draw_enemies(surface: pg.Surface, enemies: List[Coord]) -> None:
+    r = max(7, S.TILE_H // 3 + 2)
+    for (i, j) in enemies:
+        sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
+        cx = sx
+        cy = sy + S.TILE_H // 2
+        pg.draw.circle(surface, C.ENEMY_FILL, (cx, cy), r)
+        pg.draw.circle(surface, C.ENEMY_OUTLINE, (cx, cy), r, width=2)
+
+def cover_sides_from_obstacles(tile: Coord, tmap: TileMap) -> dict[str, bool]:
+    """Return dict of sides {'up','right','down','left'} mapping to FULL cover True/False based on adjacent obstacles."""
+    i, j = tile
+    return {
+        'up':    (i, j-1) in tmap.blocked,
+        'right': (i+1, j) in tmap.blocked,
+        'down':  (i, j+1) in tmap.blocked,
+        'left':  (i-1, j) in tmap.blocked,
+    }
+
+def edge_triangle(topx: int, topy: int, tile_w: int, tile_h: int, side: str) -> list[tuple[int, int]]:
+    """Small triangle pip along a diamond edge, pointing inward."""
+    pts = diamond_points(topx, topy, tile_w, tile_h)
+    center = ((pts[0][0] + pts[2][0]) // 2, (pts[0][1] + pts[2][1]) // 2)
+    if side == 'up':
+        a, b = pts[0], pts[1]
+    elif side == 'right':
+        a, b = pts[1], pts[2]
+    elif side == 'down':
+        a, b = pts[2], pts[3]
+    else:  # 'left'
+        a, b = pts[3], pts[0]
+    cx = (a[0] + b[0]) / 2
+    cy = (a[1] + b[1]) / 2
+    # Base points along the edge near center
+    t = 0.22
+    base1 = (int(cx + (a[0]-b[0]) * t), int(cy + (a[1]-b[1]) * t))
+    base2 = (int(cx + (b[0]-a[0]) * t), int(cy + (b[1]-a[1]) * t))
+    # Apex toward tile center
+    ax = int(cx + (center[0]-cx) * 0.45)
+    ay = int(cy + (center[1]-cy) * 0.45)
+    return [base1, base2, (ax, ay)]
+
+def draw_cover_pips(surface: pg.Surface, tile: Coord, tmap: TileMap) -> None:
+    i, j = tile
+    sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
+    sides = cover_sides_from_obstacles(tile, tmap)
+    for side, full in sides.items():
+        if full:
+            tri = edge_triangle(sx, sy, S.TILE_W, S.TILE_H, side)
+            pg.draw.polygon(surface, C.COVER_FULL, tri)
+        else:
+            # faint marker for "no cover"
+            tri = edge_triangle(sx, sy, S.TILE_W, S.TILE_H, side)
+            pg.draw.polygon(surface, C.COVER_NONE, tri, width=1)
+
+def facing_side(from_tile: Coord, to_tile: Coord) -> str:
+    """Which side of 'to_tile' faces 'from_tile' (dominant axis)."""
+    dx = from_tile[0] - to_tile[0]
+    dy = from_tile[1] - to_tile[1]
+    if abs(dx) >= abs(dy):
+        return 'right' if dx > 0 else 'left'
+    else:
+        return 'down' if dy > 0 else 'up'
+
+def draw_los_and_flank(surface: pg.Surface, shooter: Coord, target: Coord, tmap: TileMap, font: pg.font.Font) -> None:
+    blocked = set(tmap.blocked)  # ignoring units for LOS simplicity
+    los = has_los(shooter, target, blocked)
+    sx0, sy0 = grid_to_screen(*shooter, S.TILE_W, S.TILE_H, S.ORIGIN)
+    cx0, cy0 = sx0, sy0 + S.TILE_H // 2
+    sx1, sy1 = grid_to_screen(*target, S.TILE_W, S.TILE_H, S.ORIGIN)
+    cx1, cy1 = sx1, sy1 + S.TILE_H // 2
+    pg.draw.line(surface, C.LOS_OK if los else C.LOS_BLOCKED, (cx0, cy0), (cx1, cy1), width=2)
+
+    if los:
+        sides = cover_sides_from_obstacles(target, tmap)
+        face = facing_side(shooter, target)
+        flanked = not sides.get(face, False)
+        if flanked:
+            txt = font.render("FLANK!", True, C.FLANK_TEXT)
+            surface.blit(txt, (cx1 - txt.get_width()//2, cy1 - S.TILE_H))
+
+def draw_debug(surface: pg.Surface, font: pg.font.Font, hovered: Coord | None, sel_unit: Unit, path_info: tuple[int, int] | None, tm: TurnManager, enemies: List[Coord]) -> None:
     phase_txt = "PLAYER" if tm.phase is Phase.PLAYER else "ENEMY"
     lines = [
         f"Turn: {tm.turn}   Phase: {phase_txt}",
         f"Hovered: {hovered}" if hovered is not None else "Hovered: None",
-        f"Unit@grid: {unit.grid}  AP: {unit.ap}/{unit.ap_max}",
-        f"Origin: {S.ORIGIN}  Tile: {S.TILE_W}x{S.TILE_H}  Grid: {S.GRID_COLS}x{S.GRID_ROWS}",
-        f"1 AP tiles: {S.MOVEMENT_TILES_PER_AP} (dash=2x)",
-        "ENTER/E: end turn   L-Click: move (if enough AP & player phase)   B: toggle obstacle   R: refill AP   ESC: quit",
+        f"Selected@{sel_unit.grid}  AP: {sel_unit.ap}/{sel_unit.ap_max}",
+        f"Enemies: {len(enemies)}",
+        "TAB: cycle   1-9: select   L-Click: select/move   N: toggle enemy on hovered   B: toggle obstacle   ENTER/E: end turn   ESC: quit",
     ]
     if path_info is not None:
         steps, ap_cost = path_info
@@ -151,24 +229,25 @@ def draw_debug(surface: pg.Surface, font: pg.font.Font, hovered: tuple[int, int]
         surface.blit(surf, (x, y))
         y += surf.get_height() + 2
 
-
 def main() -> int:
     pg.init()
     try:
         screen = pg.display.set_mode((S.WINDOW_W, S.WINDOW_H))
-        pg.display.set_caption("XCOM Iso — Turn Scaffold")
+        pg.display.set_caption("XCOM Iso — LOS & Cover Pips")
         clock = pg.time.Clock()
         font = pg.font.SysFont("consolas", 16)
 
         tmap = TileMap(S.GRID_COLS, S.GRID_ROWS)
-        unit = Unit(S.UNIT_SPAWN, S.TILE_W, S.TILE_H, S.ORIGIN, S.MOVE_SPEED_PPS)
+        squad: List[Unit] = [Unit(pos, S.TILE_W, S.TILE_H, S.ORIGIN, S.MOVE_SPEED_PPS) for pos in S.UNIT_SPAWNS]
+        sel_idx = 0
         tm = TurnManager()
+        enemies: List[Coord] = []
+
+        pending_dest: Dict[Unit, Coord] = {}
 
         running = True
-        pending_dest: tuple[int, int] | None = None
-
         while running:
-            dt = clock.tick(S.FPS) / 1000.0  # seconds
+            dt = clock.tick(S.FPS) / 1000.0
 
             for e in pg.event.get():
                 if e.type == pg.QUIT:
@@ -176,56 +255,99 @@ def main() -> int:
                 elif e.type == pg.KEYDOWN:
                     if e.key == pg.K_ESCAPE:
                         running = False
+                    elif e.key == pg.K_TAB and tm.phase is Phase.PLAYER:
+                        start = (sel_idx + 1) % len(squad)
+                        idx = start
+                        chosen = start
+                        for _ in range(len(squad)):
+                            if not squad[idx].is_moving() and squad[idx].ap > 0:
+                                chosen = idx
+                                break
+                            idx = (idx + 1) % len(squad)
+                        sel_idx = chosen
+                    elif pg.K_1 <= e.key <= pg.K_9 and tm.phase is Phase.PLAYER:
+                        k = e.key - pg.K_1
+                        if k < len(squad):
+                            sel_idx = k
                     elif e.key == pg.K_b and tm.phase is Phase.PLAYER:
                         hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
-                        if tmap.in_bounds(hov) and hov != unit.grid:
+                        if tmap.in_bounds(hov) and hov not in enemies and get_unit_at(squad, hov) is None:
                             tmap.toggle_block(hov)
-                    elif e.key == pg.K_r and tm.phase is Phase.PLAYER:
-                        unit.ap = unit.ap_max
+                    elif e.key == pg.K_n and tm.phase is Phase.PLAYER:
+                        hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
+                        if tmap.in_bounds(hov) and hov not in tmap.blocked and get_unit_at(squad, hov) is None:
+                            if hov in enemies:
+                                enemies.remove(hov)
+                            else:
+                                enemies.append(hov)
                     elif e.key in (pg.K_RETURN, pg.K_e):
-                        if tm.phase is Phase.PLAYER and not unit.is_moving():
+                        if tm.phase is Phase.PLAYER and all(not u.is_moving() for u in squad):
                             tm.end_player_turn()
                 elif e.type == pg.MOUSEBUTTONDOWN and e.button == 1 and tm.phase is Phase.PLAYER:
                     i, j = screen_to_grid(*e.pos, S.TILE_W, S.TILE_H, S.ORIGIN)
-                    target = (i, j)
-                    if tmap.in_bounds(target) and tmap.passable(target):
-                        path = a_star(unit.grid, target, S.GRID_COLS, S.GRID_ROWS, tmap.blocked)
-                        if path:
-                            steps = len(path)
-                            ap_cost = math.ceil(steps / S.MOVEMENT_TILES_PER_AP)
-                            if unit.can_afford(ap_cost):
-                                unit.set_path(path, ap_cost)
-                                pending_dest = target
+                    tile = (i, j)
+                    u_on_tile = get_unit_at(squad, tile)
+                    if u_on_tile is not None:
+                        sel_idx = squad.index(u_on_tile)
+                    else:
+                        sel = squad[sel_idx]
+                        if tmap.in_bounds(tile) and tmap.passable(tile) and tile not in enemies:
+                            occ = occupied_tiles(squad, exclude=sel)
+                            if tile not in occ:
+                                blocked = set(tmap.blocked) | occ | set(enemies)
+                                path = a_star(sel.grid, tile, S.GRID_COLS, S.GRID_ROWS, blocked)
+                                if path:
+                                    steps = len(path)
+                                    ap_cost = math.ceil(steps / S.MOVEMENT_TILES_PER_AP)
+                                    if sel.can_afford(ap_cost):
+                                        sel.set_path(path, ap_cost)
+                                        pending_dest[sel] = tile
 
-            # Update unit
-            before = unit.is_moving()
-            unit.update(dt)
-            after = unit.is_moving()
-            if before and not after and pending_dest is not None:
-                unit.set_grid_immediate(pending_dest)
-                pending_dest = None
+            # Update units
+            for u in squad:
+                u.update(dt)
+                if u in pending_dest and not u.is_moving():
+                    u.set_grid_immediate(pending_dest[u])
+                    del pending_dest[u]
 
-            # Update turn manager
+            # Turn logic
             started_player_turn = tm.update(dt)
             if started_player_turn:
-                unit.ap = unit.ap_max  # refresh AP at start of each player turn
+                for u in squad:
+                    u.ap = u.ap_max
 
             # Draw
             screen.fill(C.BG)
             draw_grid(screen)
             draw_obstacles(screen, tmap)
-            draw_move_ranges(screen, unit.grid, tmap, unit.ap if tm.phase is Phase.PLAYER else 0)
+            draw_enemies(screen, enemies)
+
+            sel = squad[sel_idx]
+            occ = occupied_tiles(squad, exclude=sel)
+            draw_move_ranges(screen, sel.grid, tmap, sel.ap if tm.phase is Phase.PLAYER else 0, occ | set(enemies))
             hovered = draw_hover(screen, pg.mouse.get_pos())
-            path_info = draw_path_preview(screen, unit.grid, hovered, tmap) if tm.phase is Phase.PLAYER else None
-            draw_unit(screen, unit)
-            draw_debug(screen, font, hovered, unit, path_info, tm)
+            blocked = set(tmap.blocked) | occ | set(enemies)
+            path_info = draw_path_preview(screen, sel.grid, hovered, tmap, blocked) if tm.phase is Phase.PLAYER else None
+
+            # Cover pips on hovered tile (what cover you'd get if you stood there)
+            if hovered:
+                draw_cover_pips(screen, hovered, tmap)
+
+            # LOS & flank preview if hovering an enemy
+            if hovered and hovered in enemies:
+                draw_los_and_flank(screen, sel.grid, hovered, tmap, font)
+
+            for i, u in enumerate(squad):
+                draw_unit(screen, u, selected=(i == sel_idx))
+
+            draw_selection(screen, sel.grid)
+            draw_debug(screen, font, hovered, sel, path_info, tm, enemies)
 
             pg.display.flip()
 
         return 0
     finally:
         pg.quit()
-
 
 if __name__ == "__main__":
     sys.exit(main())
