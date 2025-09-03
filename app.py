@@ -8,9 +8,6 @@ from engine import colors as C
 
 
 def draw_grid(surface: pg.Surface) -> None:
-    """
-    Render a static isometric diamond grid with alternating fill for visual clarity.
-    """
     for j in range(S.GRID_ROWS):
         for i in range(S.GRID_COLS):
             sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
@@ -20,26 +17,51 @@ def draw_grid(surface: pg.Surface) -> None:
             pg.draw.polygon(surface, C.OUTLINE, poly, width=1)
 
 
-def draw_hover(surface: pg.Surface, mouse_pos: tuple[int, int]) -> None:
-    """
-    Highlight the tile under the mouse, if any.
-    """
+def draw_hover(surface: pg.Surface, mouse_pos: tuple[int, int]) -> tuple[int, int] | None:
     mx, my = mouse_pos
     i, j = screen_to_grid(mx, my, S.TILE_W, S.TILE_H, S.ORIGIN)
     if 0 <= i < S.GRID_COLS and 0 <= j < S.GRID_ROWS:
         sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
         poly = diamond_points(sx, sy, S.TILE_W, S.TILE_H)
-        # Draw on top of the grid for clear feedback.
         pg.draw.polygon(surface, C.HOVER_FILL, poly)
         pg.draw.polygon(surface, C.HOVER_OUTLINE, poly, width=2)
+        return (i, j)
+    return None
+
+
+def draw_selection(surface: pg.Surface, selected: tuple[int, int] | None) -> None:
+    if not selected:
+        return
+    i, j = selected
+    sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
+    poly = diamond_points(sx, sy, S.TILE_W, S.TILE_H)
+    pg.draw.polygon(surface, C.SELECT_FILL, poly)
+    pg.draw.polygon(surface, C.SELECT_OUTLINE, poly, width=2)
+
+
+def draw_debug(surface: pg.Surface, font: pg.font.Font, hovered: tuple[int, int] | None, selected: tuple[int, int] | None) -> None:
+    lines = [
+        f"Hovered: {hovered}" if hovered is not None else "Hovered: None",
+        f"Selected: {selected}" if selected is not None else "Selected: None",
+        f"Origin: {S.ORIGIN}  Tile: {S.TILE_W}x{S.TILE_H}  Grid: {S.GRID_COLS}x{S.GRID_ROWS}",
+        "L-Click: select tile   R-Click: clear selection   ESC: quit",
+    ]
+    x, y = 10, 10
+    for text in lines:
+        surf = font.render(text, True, C.TEXT)
+        surface.blit(surf, (x, y))
+        y += surf.get_height() + 2
 
 
 def main() -> int:
     pg.init()
     try:
         screen = pg.display.set_mode((S.WINDOW_W, S.WINDOW_H))
-        pg.display.set_caption("XCOM Iso Bootstrap — Hover Highlight")
+        pg.display.set_caption("XCOM Iso — Selection & Debug")
         clock = pg.time.Clock()
+        font = pg.font.SysFont("consolas", 16)
+
+        selected: tuple[int, int] | None = None
 
         running = True
         while running:
@@ -48,10 +70,19 @@ def main() -> int:
                     running = False
                 elif e.type == pg.KEYDOWN and e.key == pg.K_ESCAPE:
                     running = False
+                elif e.type == pg.MOUSEBUTTONDOWN:
+                    if e.button == 1:  # left click → select
+                        i, j = screen_to_grid(*e.pos, S.TILE_W, S.TILE_H, S.ORIGIN)
+                        if 0 <= i < S.GRID_COLS and 0 <= j < S.GRID_ROWS:
+                            selected = (i, j)
+                    elif e.button == 3:  # right click → clear
+                        selected = None
 
             screen.fill(C.BG)
             draw_grid(screen)
-            draw_hover(screen, pg.mouse.get_pos())
+            draw_selection(screen, selected)
+            hovered = draw_hover(screen, pg.mouse.get_pos())
+            draw_debug(screen, font, hovered, selected)
 
             pg.display.flip()
             clock.tick(S.FPS)
