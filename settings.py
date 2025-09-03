@@ -22,3 +22,5 @@ ORIGIN_Y = 100
 ORIGIN = (ORIGIN_X, ORIGIN_Y)
 # Movement preview tuning
 MOVEMENT_TILES_PER_AP = 6  # 1 AP radius (Manhattan), dash = 2 AP
+# Pathfinding / movement
+ALLOW_DIAGONAL = False  # reserved for future; current A* uses 4-dir
