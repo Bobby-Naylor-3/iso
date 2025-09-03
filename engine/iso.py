@@ -55,3 +55,10 @@ def diamond_points(top_x: int, top_y: int, tile_w: int, tile_h: int):
         (top_x, top_y + tile_h),
         (top_x - half_w, top_y + half_h),
     ]
+def tile_center(i: int, j: int, tile_w: int, tile_h: int, origin: Tuple[int, int]) -> Tuple[int, int]:
+    """
+    Screen-space center of tile (i,j). For a 2:1 iso diamond whose *top* is (sx,sy),
+    the center is (sx, sy + tile_h//2).
+    """
+    sx, sy = grid_to_screen(i, j, tile_w, tile_h, origin)
+    return sx, sy + tile_h // 2

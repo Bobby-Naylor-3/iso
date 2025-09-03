@@ -4,10 +4,11 @@ import math
 import pygame as pg
 
 import settings as S
-from engine.iso import grid_to_screen, screen_to_grid, diamond_points
+from engine.iso import grid_to_screen, screen_to_grid, diamond_points, tile_center
 from engine import colors as C
 from engine.map import TileMap
 from engine.pathfinding import a_star
+from engine.unit import Unit
 
 
 def draw_grid(surface: pg.Surface) -> None:
@@ -51,10 +52,6 @@ def draw_selection(surface: pg.Surface, selected: tuple[int, int] | None) -> Non
 
 
 def bfs_reachable(origin: tuple[int, int], max_steps: int, tmap: TileMap) -> set[tuple[int, int]]:
-    """
-    Uniform-cost BFS limited by max_steps over passable tiles.
-    Returns the set of reachable tiles excluding origin.
-    """
     from collections import deque
     frontier = deque()
     frontier.append((origin, 0))
@@ -75,11 +72,11 @@ def bfs_reachable(origin: tuple[int, int], max_steps: int, tmap: TileMap) -> set
     return reachable
 
 
-def draw_move_ranges(surface: pg.Surface, selected: tuple[int, int] | None, tmap: TileMap) -> None:
-    if not selected:
+def draw_move_ranges(surface: pg.Surface, origin: tuple[int, int] | None, tmap: TileMap) -> None:
+    if not origin:
         return
-    blue = bfs_reachable(selected, S.MOVEMENT_TILES_PER_AP, tmap)
-    yellow = bfs_reachable(selected, S.MOVEMENT_TILES_PER_AP * 2, tmap) - blue
+    blue = bfs_reachable(origin, S.MOVEMENT_TILES_PER_AP, tmap)
+    yellow = bfs_reachable(origin, S.MOVEMENT_TILES_PER_AP * 2, tmap) - blue
 
     overlay = pg.Surface(surface.get_size(), pg.SRCALPHA)
     for (i, j) in yellow:
@@ -97,17 +94,16 @@ def draw_move_ranges(surface: pg.Surface, selected: tuple[int, int] | None, tmap
     surface.blit(overlay, (0, 0))
 
 
-def draw_path_preview(surface: pg.Surface, selected: tuple[int, int] | None, hovered: tuple[int, int] | None, tmap: TileMap) -> tuple[int, int] | None:
-    if not selected or not hovered:
+def draw_path_preview(surface: pg.Surface, origin: tuple[int, int] | None, hovered: tuple[int, int] | None, tmap: TileMap) -> tuple[int, int] | None:
+    if not origin or not hovered:
         return None
     if not tmap.passable(hovered):
         return None
 
-    path = a_star(selected, hovered, S.GRID_COLS, S.GRID_ROWS, tmap.blocked)
+    path = a_star(origin, hovered, S.GRID_COLS, S.GRID_ROWS, tmap.blocked)
     if not path:
         return None
 
-    # Cap visual to 2 AP
     max_steps = S.MOVEMENT_TILES_PER_AP * 2
     path = path[:max_steps]
 
@@ -124,13 +120,19 @@ def draw_path_preview(surface: pg.Surface, selected: tuple[int, int] | None, hov
     return steps, ap_cost
 
 
-def draw_debug(surface: pg.Surface, font: pg.font.Font, hovered: tuple[int, int] | None, selected: tuple[int, int] | None, path_info: tuple[int, int] | None) -> None:
+def draw_unit(surface: pg.Surface, u: Unit) -> None:
+    r = max(6, S.TILE_H // 3)
+    pg.draw.circle(surface, C.UNIT_FILL, (int(u.pos_x), int(u.pos_y)), r)
+    pg.draw.circle(surface, C.UNIT_OUTLINE, (int(u.pos_x), int(u.pos_y)), r, width=2)
+
+
+def draw_debug(surface: pg.Surface, font: pg.font.Font, hovered: tuple[int, int] | None, unit: Unit, path_info: tuple[int, int] | None) -> None:
     lines = [
         f"Hovered: {hovered}" if hovered is not None else "Hovered: None",
-        f"Selected: {selected}" if selected is not None else "Selected: None",
+        f"Unit@grid: {unit.grid}  AP: {unit.ap}/{unit.ap_max}",
         f"Origin: {S.ORIGIN}  Tile: {S.TILE_W}x{S.TILE_H}  Grid: {S.GRID_COLS}x{S.GRID_ROWS}",
         f"1 AP tiles: {S.MOVEMENT_TILES_PER_AP} (dash=2x)",
-        "L-Click: select   R-Click: clear selection   B: toggle obstacle on hovered   ESC: quit",
+        "L-Click on reachable: move   B: toggle obstacle on hovered (no unit tile)   R: refresh AP   ESC: quit",
     ]
     if path_info is not None:
         steps, ap_cost = path_info
@@ -147,15 +149,19 @@ def main() -> int:
     pg.init()
     try:
         screen = pg.display.set_mode((S.WINDOW_W, S.WINDOW_H))
-        pg.display.set_caption("XCOM Iso — Obstacles, A* & BFS Ranges")
+        pg.display.set_caption("XCOM Iso — Unit Movement & AP")
         clock = pg.time.Clock()
         font = pg.font.SysFont("consolas", 16)
 
         tmap = TileMap(S.GRID_COLS, S.GRID_ROWS)
-        selected: tuple[int, int] | None = None
+        unit = Unit(S.UNIT_SPAWN, S.TILE_W, S.TILE_H, S.ORIGIN, S.MOVE_SPEED_PPS)
 
         running = True
+        pending_dest: tuple[int, int] | None = None
+
         while running:
+            dt = clock.tick(S.FPS) / 1000.0  # seconds
+
             for e in pg.event.get():
                 if e.type == pg.QUIT:
                     running = False
@@ -164,30 +170,45 @@ def main() -> int:
                         running = False
                     elif e.key == pg.K_b:
                         hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
-                        if tmap.in_bounds(hov):
+                        # Avoid blocking the unit's current tile
+                        if tmap.in_bounds(hov) and hov != unit.grid:
                             tmap.toggle_block(hov)
-                            # Keep selection valid if you blocked it
-                            if selected == hov:
-                                selected = None
-                elif e.type == pg.MOUSEBUTTONDOWN:
-                    if e.button == 1:  # select
-                        i, j = screen_to_grid(*e.pos, S.TILE_W, S.TILE_H, S.ORIGIN)
-                        if 0 <= i < S.GRID_COLS and 0 <= j < S.GRID_ROWS and tmap.passable((i, j)):
-                            selected = (i, j)
-                    elif e.button == 3:  # clear
-                        selected = None
+                    elif e.key == pg.K_r:
+                        unit.ap = unit.ap_max
+                elif e.type == pg.MOUSEBUTTONDOWN and e.button == 1:  # left click -> move if possible
+                    i, j = screen_to_grid(*e.pos, S.TILE_W, S.TILE_H, S.ORIGIN)
+                    target = (i, j)
+                    if tmap.in_bounds(target) and tmap.passable(target):
+                        # Compute path and ap cost
+                        path = a_star(unit.grid, target, S.GRID_COLS, S.GRID_ROWS, tmap.blocked)
+                        if path:
+                            steps = len(path)
+                            ap_cost = math.ceil(steps / S.MOVEMENT_TILES_PER_AP)
+                            if unit.can_afford(ap_cost):
+                                unit.set_path(path, ap_cost)
+                                pending_dest = target
 
+            # Update unit
+            before_moving = unit.is_moving()
+            unit.update(dt)
+            after_moving = unit.is_moving()
+
+            # If we just finished a move, snap grid index to pending destination
+            if before_moving and not after_moving and pending_dest is not None:
+                unit.set_grid_immediate(pending_dest)
+                pending_dest = None
+
+            # Draw
             screen.fill(C.BG)
             draw_grid(screen)
             draw_obstacles(screen, tmap)
-            draw_selection(screen, selected)
-            draw_move_ranges(screen, selected, tmap)
+            draw_move_ranges(screen, unit.grid, tmap)
             hovered = draw_hover(screen, pg.mouse.get_pos())
-            path_info = draw_path_preview(screen, selected, hovered, tmap)
-            draw_debug(screen, font, hovered, selected, path_info)
+            path_info = draw_path_preview(screen, unit.grid, hovered, tmap)
+            draw_unit(screen, unit)
+            draw_debug(screen, font, hovered, unit, path_info)
 
             pg.display.flip()
-            clock.tick(S.FPS)
 
         return 0
     finally:

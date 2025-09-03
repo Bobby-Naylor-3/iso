@@ -24,3 +24,6 @@ ORIGIN = (ORIGIN_X, ORIGIN_Y)
 MOVEMENT_TILES_PER_AP = 6  # 1 AP radius (Manhattan), dash = 2 AP
 # Pathfinding / movement
 ALLOW_DIAGONAL = False  # reserved for future; current A* uses 4-dir
+# Demo unit spawn & movement
+UNIT_SPAWN = (5, 5)
+MOVE_SPEED_PPS = 220  # pixels per second for movement animation
