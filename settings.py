@@ -29,3 +29,17 @@ UNIT_SPAWN = (5, 5)
 MOVE_SPEED_PPS = 220  # pixels per second for movement animation
 # Squad spawns (grid coords)
 UNIT_SPAWNS = [(5, 5), (7, 6), (9, 8)]
+# Combat tuning (bootstrap, super simple)
+BASE_AIM = 65               # shooter base aim
+BASE_CRIT = 0               # base crit chance
+COVER_FULL_DEF = 40         # defense from a blocking adjacent obstacle (treated as full cover)
+FLANK_AIM = 0               # aim bonus on flank (classic XCOM flanks give crit, not aim)
+FLANK_CRIT = 40             # crit bonus on flank
+HIT_FLOOR = 5               # clamp hit chance [HIT_FLOOR, HIT_CEIL]
+HIT_CEIL = 95
+
+SHOOT_AP_COST = 1
+
+WEAPON_DMG_MIN = 2
+WEAPON_DMG_MAX = 4
+CRIT_BONUS_DMG = 2          # flat bonus on crit

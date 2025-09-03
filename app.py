@@ -1,6 +1,7 @@
 from __future__ import annotations
 import sys
 import math
+import random
 from typing import List, Tuple, Optional, Dict, Set
 
 import pygame as pg
@@ -16,6 +17,7 @@ from engine.los import has_los
 
 Coord = Tuple[int, int]
 
+
 def draw_grid(surface: pg.Surface) -> None:
     for j in range(S.GRID_ROWS):
         for i in range(S.GRID_COLS):
@@ -25,12 +27,14 @@ def draw_grid(surface: pg.Surface) -> None:
             pg.draw.polygon(surface, fill, poly)
             pg.draw.polygon(surface, C.OUTLINE, poly, width=1)
 
+
 def draw_obstacles(surface: pg.Surface, tmap: TileMap) -> None:
     for (i, j) in tmap.blocked:
         sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
         poly = diamond_points(sx, sy, S.TILE_W, S.TILE_H)
         pg.draw.polygon(surface, C.OBSTACLE_FILL, poly)
         pg.draw.polygon(surface, C.OBSTACLE_OUTLINE, poly, width=2)
+
 
 def draw_hover(surface: pg.Surface, mouse_pos: tuple[int, int]) -> tuple[int, int] | None:
     mx, my = mouse_pos
@@ -43,6 +47,7 @@ def draw_hover(surface: pg.Surface, mouse_pos: tuple[int, int]) -> tuple[int, in
         return (i, j)
     return None
 
+
 def draw_selection(surface: pg.Surface, tile: tuple[int, int] | None) -> None:
     if not tile:
         return
@@ -52,6 +57,7 @@ def draw_selection(surface: pg.Surface, tile: tuple[int, int] | None) -> None:
     pg.draw.polygon(surface, C.SELECT_FILL, poly)
     pg.draw.polygon(surface, C.SELECT_OUTLINE, poly, width=2)
 
+
 def occupied_tiles(units: List[Unit], exclude: Optional[Unit] = None) -> Set[Coord]:
     occ: Set[Coord] = set()
     for u in units:
@@ -59,6 +65,7 @@ def occupied_tiles(units: List[Unit], exclude: Optional[Unit] = None) -> Set[Coo
             continue
         occ.add(u.grid)
     return occ
+
 
 def bfs_reachable(origin: Coord, max_steps: int, tmap: TileMap, extra_blocked: Set[Coord]) -> set[Coord]:
     from collections import deque
@@ -79,6 +86,7 @@ def bfs_reachable(origin: Coord, max_steps: int, tmap: TileMap, extra_blocked: S
             frontier.append((nc, d + 1))
     return reachable
 
+
 def draw_move_ranges(surface: pg.Surface, origin: Coord | None, tmap: TileMap, available_ap: int, occ: Set[Coord]) -> None:
     if not origin or available_ap <= 0:
         return
@@ -96,25 +104,31 @@ def draw_move_ranges(surface: pg.Surface, origin: Coord | None, tmap: TileMap, a
             pg.draw.polygon(overlay, C.MOVE_YELLOW_OUTLINE, diamond_points(sx, sy, S.TILE_W, S.TILE_H), width=1)
     surface.blit(overlay, (0, 0))
 
+
 def draw_path_preview(surface: pg.Surface, origin: Coord | None, hovered: Coord | None, tmap: TileMap, blocked: Set[Coord]) -> tuple[int, int] | None:
     if not origin or not hovered:
         return None
     if hovered in blocked or not tmap.passable(hovered):
         return None
+
     path = a_star(origin, hovered, S.GRID_COLS, S.GRID_ROWS, blocked)
     if not path:
         return None
+
     max_steps = S.MOVEMENT_TILES_PER_AP * 2
     path = path[:max_steps]
+
     overlay = pg.Surface(surface.get_size(), pg.SRCALPHA)
     for (i, j) in path:
         sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
         pg.draw.polygon(overlay, C.PATH_FILL, diamond_points(sx, sy, S.TILE_W, S.TILE_H))
         pg.draw.polygon(overlay, C.PATH_OUTLINE, diamond_points(sx, sy, S.TILE_W, S.TILE_H), width=1)
     surface.blit(overlay, (0, 0))
+
     steps = len(path)
     ap_cost = math.ceil(steps / S.MOVEMENT_TILES_PER_AP) if steps > 0 else 0
     return steps, ap_cost
+
 
 def draw_unit(surface: pg.Surface, u: Unit, selected: bool) -> None:
     r = max(6, S.TILE_H // 3)
@@ -123,105 +137,116 @@ def draw_unit(surface: pg.Surface, u: Unit, selected: bool) -> None:
     if selected:
         pg.draw.circle(surface, C.SELECT_OUTLINE, (int(u.pos_x), int(u.pos_y)), r + 3, width=2)
 
+
 def get_unit_at(units: List[Unit], tile: Coord) -> Optional[Unit]:
     for u in units:
         if u.grid == tile:
             return u
     return None
 
-def draw_enemies(surface: pg.Surface, enemies: List[Coord]) -> None:
+
+def draw_enemies(surface: pg.Surface, enemies: Dict[Coord, int]) -> None:
     r = max(7, S.TILE_H // 3 + 2)
-    for (i, j) in enemies:
+    for (i, j), hp in enemies.items():
         sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
-        cx = sx
-        cy = sy + S.TILE_H // 2
+        cx, cy = sx, sy + S.TILE_H // 2
         pg.draw.circle(surface, C.ENEMY_FILL, (cx, cy), r)
         pg.draw.circle(surface, C.ENEMY_OUTLINE, (cx, cy), r, width=2)
+        # tiny hp pips text
+        hp_text = str(hp)
+        font_small = pg.font.SysFont("consolas", 14)
+        surf = font_small.render(hp_text, True, C.TEXT)
+        surface.blit(surf, (cx - surf.get_width() // 2, cy - r - surf.get_height()))
 
-def cover_sides_from_obstacles(tile: Coord, tmap: TileMap) -> dict[str, bool]:
-    """Return dict of sides {'up','right','down','left'} mapping to FULL cover True/False based on adjacent obstacles."""
-    i, j = tile
-    return {
-        'up':    (i, j-1) in tmap.blocked,
-        'right': (i+1, j) in tmap.blocked,
-        'down':  (i, j+1) in tmap.blocked,
-        'left':  (i-1, j) in tmap.blocked,
-    }
 
-def edge_triangle(topx: int, topy: int, tile_w: int, tile_h: int, side: str) -> list[tuple[int, int]]:
-    """Small triangle pip along a diamond edge, pointing inward."""
-    pts = diamond_points(topx, topy, tile_w, tile_h)
-    center = ((pts[0][0] + pts[2][0]) // 2, (pts[0][1] + pts[2][1]) // 2)
-    if side == 'up':
-        a, b = pts[0], pts[1]
-    elif side == 'right':
-        a, b = pts[1], pts[2]
-    elif side == 'down':
-        a, b = pts[2], pts[3]
-    else:  # 'left'
-        a, b = pts[3], pts[0]
-    cx = (a[0] + b[0]) / 2
-    cy = (a[1] + b[1]) / 2
-    # Base points along the edge near center
-    t = 0.22
-    base1 = (int(cx + (a[0]-b[0]) * t), int(cy + (a[1]-b[1]) * t))
-    base2 = (int(cx + (b[0]-a[0]) * t), int(cy + (b[1]-a[1]) * t))
-    # Apex toward tile center
-    ax = int(cx + (center[0]-cx) * 0.45)
-    ay = int(cy + (center[1]-cy) * 0.45)
-    return [base1, base2, (ax, ay)]
-
-def draw_cover_pips(surface: pg.Surface, tile: Coord, tmap: TileMap) -> None:
-    i, j = tile
-    sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
-    sides = cover_sides_from_obstacles(tile, tmap)
-    for side, full in sides.items():
-        if full:
-            tri = edge_triangle(sx, sy, S.TILE_W, S.TILE_H, side)
-            pg.draw.polygon(surface, C.COVER_FULL, tri)
-        else:
-            # faint marker for "no cover"
-            tri = edge_triangle(sx, sy, S.TILE_W, S.TILE_H, side)
-            pg.draw.polygon(surface, C.COVER_NONE, tri, width=1)
-
-def facing_side(from_tile: Coord, to_tile: Coord) -> str:
-    """Which side of 'to_tile' faces 'from_tile' (dominant axis)."""
-    dx = from_tile[0] - to_tile[0]
-    dy = from_tile[1] - to_tile[1]
+def cover_full_on_facing(target: Coord, shooter: Coord, tmap: TileMap) -> bool:
+    # Use obstacle-adjacent cover as "full". Determine which side of target faces shooter.
+    ti, tj = target
+    sx, sy = shooter
+    dx = sx - ti
+    dy = sy - tj
     if abs(dx) >= abs(dy):
-        return 'right' if dx > 0 else 'left'
+        side = (ti + (1 if dx < 0 else -1), tj)  # shooter is left/right → we care about left/right neighbor
     else:
-        return 'down' if dy > 0 else 'up'
+        side = (ti, tj + (1 if dy < 0 else -1))  # shooter is up/down → we care about up/down neighbor
+    return side in tmap.blocked
 
-def draw_los_and_flank(surface: pg.Surface, shooter: Coord, target: Coord, tmap: TileMap, font: pg.font.Font) -> None:
-    blocked = set(tmap.blocked)  # ignoring units for LOS simplicity
-    los = has_los(shooter, target, blocked)
-    sx0, sy0 = grid_to_screen(*shooter, S.TILE_W, S.TILE_H, S.ORIGIN)
-    cx0, cy0 = sx0, sy0 + S.TILE_H // 2
-    sx1, sy1 = grid_to_screen(*target, S.TILE_W, S.TILE_H, S.ORIGIN)
-    cx1, cy1 = sx1, sy1 + S.TILE_H // 2
-    pg.draw.line(surface, C.LOS_OK if los else C.LOS_BLOCKED, (cx0, cy0), (cx1, cy1), width=2)
 
-    if los:
-        sides = cover_sides_from_obstacles(target, tmap)
-        face = facing_side(shooter, target)
-        flanked = not sides.get(face, False)
-        if flanked:
-            txt = font.render("FLANK!", True, C.FLANK_TEXT)
-            surface.blit(txt, (cx1 - txt.get_width()//2, cy1 - S.TILE_H))
+def calc_shot_chances(shooter: Coord, target: Coord, tmap: TileMap) -> Optional[tuple[int, int]]:
+    if not has_los(shooter, target, set(tmap.blocked)):
+        return None
+    # Aim vs defense
+    aim = S.BASE_AIM
+    defense = 0
+    flanked = not cover_full_on_facing(target, shooter, tmap)
+    if not flanked:
+        defense += S.COVER_FULL_DEF
+    else:
+        aim += S.FLANK_AIM
 
-def draw_debug(surface: pg.Surface, font: pg.font.Font, hovered: Coord | None, sel_unit: Unit, path_info: tuple[int, int] | None, tm: TurnManager, enemies: List[Coord]) -> None:
+    hit = max(S.HIT_FLOOR, min(S.HIT_CEIL, aim - defense))
+    crit = max(0, min(100, S.BASE_CRIT + (S.FLANK_CRIT if flanked else 0)))
+    return hit, crit
+
+
+def draw_shot_preview(surface: pg.Surface, font: pg.font.Font, shooter: Coord, hovered: Coord, tmap: TileMap, enemies: Dict[Coord, int]) -> None:
+    sx, sy = grid_to_screen(*hovered, S.TILE_W, S.TILE_H, S.ORIGIN)
+    cx, cy = sx, sy + S.TILE_H // 2
+    chances = calc_shot_chances(shooter, hovered, tmap)
+    if hovered not in enemies:
+        return
+    if chances is None:
+        txt = font.render("NO LOS", True, C.SHOT_NLOS)
+        surface.blit(txt, (cx - txt.get_width() // 2, cy - S.TILE_H))
+        return
+    hit, crit = chances
+    line = f"HIT {hit}%   CRIT {crit}%   DMG {S.WEAPON_DMG_MIN}-{S.WEAPON_DMG_MAX}{'(+%d)' % S.CRIT_BONUS_DMG if S.CRIT_BONUS_DMG else ''}"
+    txt = font.render(line, True, C.SHOT_TEXT)
+    surface.blit(txt, (cx - txt.get_width() // 2, cy - S.TILE_H))
+
+
+def resolve_shot(rng: random.Random, shooter: Unit, target_tile: Coord, tmap: TileMap, enemies: Dict[Coord, int], log: List[str]) -> None:
+    if shooter.ap < S.SHOOT_AP_COST or shooter.is_moving():
+        return
+    chances = calc_shot_chances(shooter.grid, target_tile, tmap)
+    if chances is None or target_tile not in enemies:
+        return
+
+    hit_ch, crit_ch = chances
+    roll = rng.randint(1, 100)
+    if roll <= hit_ch:
+        # Hit!
+        crit_roll = rng.randint(1, 100)
+        is_crit = crit_roll <= crit_ch
+        dmg = rng.randint(S.WEAPON_DMG_MIN, S.WEAPON_DMG_MAX) + (S.CRIT_BONUS_DMG if is_crit else 0)
+        enemies[target_tile] -= dmg
+        shooter.ap -= S.SHOOT_AP_COST
+        msg = f"Shot {target_tile}: HIT for {dmg}{' (CRIT)' if is_crit else ''}"
+        if enemies[target_tile] <= 0:
+            del enemies[target_tile]
+            msg += " — KILL"
+        log.append(msg)
+    else:
+        shooter.ap -= S.SHOOT_AP_COST
+        log.append(f"Shot {target_tile}: MISS")
+
+
+def draw_debug(surface: pg.Surface, font: pg.font.Font, hovered: Coord | None, sel_unit: Unit, path_info: tuple[int, int] | None, tm: TurnManager, enemies: Dict[Coord, int], log: List[str]) -> None:
     phase_txt = "PLAYER" if tm.phase is Phase.PLAYER else "ENEMY"
     lines = [
         f"Turn: {tm.turn}   Phase: {phase_txt}",
         f"Hovered: {hovered}" if hovered is not None else "Hovered: None",
         f"Selected@{sel_unit.grid}  AP: {sel_unit.ap}/{sel_unit.ap_max}",
         f"Enemies: {len(enemies)}",
-        "TAB: cycle   1-9: select   L-Click: select/move   N: toggle enemy on hovered   B: toggle obstacle   ENTER/E: end turn   ESC: quit",
+        "Controls: TAB cycle | 1-9 select | L-Click select/move | N place/remove enemy | F fire at hovered enemy | B toggle obstacle | ENTER/E end turn | ESC quit",
     ]
     if path_info is not None:
         steps, ap_cost = path_info
         lines.insert(3, f"Path steps: {steps}   AP cost: {ap_cost}")
+
+    # recent log (last 3)
+    for entry in log[-3:]:
+        lines.append(entry)
 
     x, y = 10, 10
     for text in lines:
@@ -229,21 +254,24 @@ def draw_debug(surface: pg.Surface, font: pg.font.Font, hovered: Coord | None, s
         surface.blit(surf, (x, y))
         y += surf.get_height() + 2
 
+
 def main() -> int:
     pg.init()
     try:
         screen = pg.display.set_mode((S.WINDOW_W, S.WINDOW_H))
-        pg.display.set_caption("XCOM Iso — LOS & Cover Pips")
+        pg.display.set_caption("XCOM Iso — Shot Preview & Firing")
         clock = pg.time.Clock()
         font = pg.font.SysFont("consolas", 16)
+
+        rng = random.Random(1337)
 
         tmap = TileMap(S.GRID_COLS, S.GRID_ROWS)
         squad: List[Unit] = [Unit(pos, S.TILE_W, S.TILE_H, S.ORIGIN, S.MOVE_SPEED_PPS) for pos in S.UNIT_SPAWNS]
         sel_idx = 0
         tm = TurnManager()
-        enemies: List[Coord] = []
-
+        enemies: Dict[Coord, int] = {}  # tile -> HP
         pending_dest: Dict[Unit, Coord] = {}
+        log: List[str] = []
 
         running = True
         while running:
@@ -277,9 +305,14 @@ def main() -> int:
                         hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
                         if tmap.in_bounds(hov) and hov not in tmap.blocked and get_unit_at(squad, hov) is None:
                             if hov in enemies:
-                                enemies.remove(hov)
+                                del enemies[hov]
                             else:
-                                enemies.append(hov)
+                                enemies[hov] = 3  # demo HP
+                    elif e.key == pg.K_f and tm.phase is Phase.PLAYER:
+                        sel = squad[sel_idx]
+                        hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
+                        if hov in enemies:
+                            resolve_shot(rng, sel, hov, tmap, enemies, log)
                     elif e.key in (pg.K_RETURN, pg.K_e):
                         if tm.phase is Phase.PLAYER and all(not u.is_moving() for u in squad):
                             tm.end_player_turn()
@@ -294,7 +327,7 @@ def main() -> int:
                         if tmap.in_bounds(tile) and tmap.passable(tile) and tile not in enemies:
                             occ = occupied_tiles(squad, exclude=sel)
                             if tile not in occ:
-                                blocked = set(tmap.blocked) | occ | set(enemies)
+                                blocked = set(tmap.blocked) | occ | set(enemies.keys())
                                 path = a_star(sel.grid, tile, S.GRID_COLS, S.GRID_ROWS, blocked)
                                 if path:
                                     steps = len(path)
@@ -310,7 +343,7 @@ def main() -> int:
                     u.set_grid_immediate(pending_dest[u])
                     del pending_dest[u]
 
-            # Turn logic
+            # Enemy phase placeholder
             started_player_turn = tm.update(dt)
             if started_player_turn:
                 for u in squad:
@@ -324,30 +357,27 @@ def main() -> int:
 
             sel = squad[sel_idx]
             occ = occupied_tiles(squad, exclude=sel)
-            draw_move_ranges(screen, sel.grid, tmap, sel.ap if tm.phase is Phase.PLAYER else 0, occ | set(enemies))
+            draw_move_ranges(screen, sel.grid, tmap, sel.ap if tm.phase is Phase.PLAYER else 0, occ | set(enemies.keys()))
             hovered = draw_hover(screen, pg.mouse.get_pos())
-            blocked = set(tmap.blocked) | occ | set(enemies)
+            blocked = set(tmap.blocked) | occ | set(enemies.keys())
             path_info = draw_path_preview(screen, sel.grid, hovered, tmap, blocked) if tm.phase is Phase.PLAYER else None
 
-            # Cover pips on hovered tile (what cover you'd get if you stood there)
+            # Shot preview on hovered enemy
             if hovered:
-                draw_cover_pips(screen, hovered, tmap)
-
-            # LOS & flank preview if hovering an enemy
-            if hovered and hovered in enemies:
-                draw_los_and_flank(screen, sel.grid, hovered, tmap, font)
+                draw_shot_preview(screen, font, sel.grid, hovered, tmap, enemies)
 
             for i, u in enumerate(squad):
                 draw_unit(screen, u, selected=(i == sel_idx))
 
             draw_selection(screen, sel.grid)
-            draw_debug(screen, font, hovered, sel, path_info, tm, enemies)
+            draw_debug(screen, font, hovered, sel, path_info, tm, enemies, log)
 
             pg.display.flip()
 
         return 0
     finally:
         pg.quit()
+
 
 if __name__ == "__main__":
     sys.exit(main())
