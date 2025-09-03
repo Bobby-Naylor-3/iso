@@ -20,3 +20,5 @@ TILE_H = 32
 ORIGIN_X = WINDOW_W // 2
 ORIGIN_Y = 100
 ORIGIN = (ORIGIN_X, ORIGIN_Y)
+# Movement preview tuning
+MOVEMENT_TILES_PER_AP = 6  # 1 AP radius (Manhattan), dash = 2 AP
