@@ -50,3 +50,9 @@ OVERWATCH_AIM_MALUS = 15  # penalty applied to OW shots
 ENEMY_DEFAULT_HP = 3
 ENEMY_STEPS_PER_TURN = 6     # tiles per enemy per enemy phase
 ENEMY_STEP_TIME = 0.08       # seconds per enemy step (visual pacing)
+# Ammo / reload
+CLIP_SIZE = 3
+RELOAD_AP_COST = 1
+# Cover values
+COVER_HALF_DEF = 20  # defense from half cover (crates)
+# COVER_FULL_DEF already exists (40)

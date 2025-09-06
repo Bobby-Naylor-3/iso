@@ -3,7 +3,6 @@ import sys
 import math
 import random
 from typing import List, Tuple, Optional, Dict, Set
-
 import pygame as pg
 
 import settings as S
@@ -12,7 +11,6 @@ from engine import colors as C
 from engine.map import TileMap
 from engine.pathfinding import a_star
 from engine.unit import Unit
-from engine.enemy import Enemy
 from engine.turns import TurnManager, Phase
 from engine.los import has_los
 
@@ -66,44 +64,12 @@ def draw_tile_selection(surface: pg.Surface, tile: tuple[int, int] | None) -> No
 
 
 def draw_unit(surface: pg.Surface, u: Unit, selected: bool) -> None:
-    """Simple circle sprite at the unit's pixel position; ring if selected; OW ring if on overwatch."""
+    """Simple circle sprite at the unit's pixel position; ring if selected."""
     r = max(6, S.TILE_H // 3)
-    if getattr(u, "overwatch", False):
-        pg.draw.circle(surface, C.OVERWATCH_RING, (int(u.pos_x), int(u.pos_y)), r + 6, width=2)
     pg.draw.circle(surface, C.UNIT_FILL, (int(u.pos_x), int(u.pos_y)), r)
     pg.draw.circle(surface, C.UNIT_OUTLINE, (int(u.pos_x), int(u.pos_y)), r, width=2)
     if selected:
         pg.draw.circle(surface, C.SELECT_OUTLINE, (int(u.pos_x), int(u.pos_y)), r + 3, width=2)
-    # ammo pips under the unit
-    draw_ammo_pips(surface, u)
-
-
-def draw_enemies(surface: pg.Surface, enemies: List[Enemy]) -> None:
-    r = max(7, S.TILE_H // 3 + 2)
-    font_small = pg.font.SysFont("consolas", 14)
-    for e in enemies:
-        i, j = e.grid
-        sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
-        cx, cy = sx, sy + S.TILE_H // 2
-        pg.draw.circle(surface, C.ENEMY_FILL, (cx, cy), r)
-        pg.draw.circle(surface, C.ENEMY_OUTLINE, (cx, cy), r, width=2)
-        surf = font_small.render(str(max(0, e.hp)), True, C.TEXT)
-        surface.blit(surf, (cx - surf.get_width() // 2, cy - r - surf.get_height()))
-
-
-def draw_ammo_pips(surface: pg.Surface, u: Unit) -> None:
-    # Tiny rectangles below the unit indicating current clip
-    cx, cy = int(u.pos_x), int(u.pos_y)
-    n = u.clip_max
-    w, h, gap = 6, 8, 2
-    total_w = n * w + (n - 1) * gap
-    x0 = cx - total_w // 2
-    y0 = cy + (S.TILE_H // 2) + 6
-    for k in range(n):
-        rect = pg.Rect(x0 + k * (w + gap), y0, w, h)
-        color = C.AMMO_FULL if k < u.ammo else C.AMMO_EMPTY
-        pg.draw.rect(surface, color, rect)
-        pg.draw.rect(surface, C.UNIT_OUTLINE, rect, 1)
 
 
 # ---------- Helpers (occupancy, enemies) ----------
@@ -115,13 +81,6 @@ def get_unit_at(units: List[Unit], tile: Coord) -> Optional[Unit]:
     return None
 
 
-def get_enemy_at(enemies: List[Enemy], tile: Coord) -> Optional[Enemy]:
-    for e in enemies:
-        if e.grid == tile:
-            return e
-    return None
-
-
 def occupied_tiles(units: List[Unit], exclude: Optional[Unit] = None) -> Set[Coord]:
     occ: Set[Coord] = set()
     for u in units:
@@ -129,6 +88,20 @@ def occupied_tiles(units: List[Unit], exclude: Optional[Unit] = None) -> Set[Coo
             continue
         occ.add(u.grid)
     return occ
+
+
+def draw_enemies(surface: pg.Surface, enemies: Dict[Coord, int]) -> None:
+    r = max(7, S.TILE_H // 3 + 2)
+    for (i, j), hp in enemies.items():
+        sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
+        cx, cy = sx, sy + S.TILE_H // 2
+        pg.draw.circle(surface, C.ENEMY_FILL, (cx, cy), r)
+        pg.draw.circle(surface, C.ENEMY_OUTLINE, (cx, cy), r, width=2)
+        # tiny hp pips text
+        hp_text = str(hp)
+        font_small = pg.font.SysFont("consolas", 14)
+        surf = font_small.render(hp_text, True, C.TEXT)
+        surface.blit(surf, (cx - surf.get_width() // 2, cy - r - surf.get_height()))
 
 
 # ---------- Cover & LOS ----------
@@ -158,9 +131,11 @@ def edge_triangle(topx: int, topy: int, tile_w: int, tile_h: int, side: str) -> 
         a, b = pts[3], pts[0]
     cx = (a[0] + b[0]) / 2
     cy = (a[1] + b[1]) / 2
+    # Base points along the edge near center
     t = 0.22
     base1 = (int(cx + (a[0]-b[0]) * t), int(cy + (a[1]-b[1]) * t))
     base2 = (int(cx + (b[0]-a[0]) * t), int(cy + (b[1]-a[1]) * t))
+    # Apex toward tile center
     ax = int(cx + (center[0]-cx) * 0.45)
     ay = int(cy + (center[1]-cy) * 0.45)
     return [base1, base2, (ax, ay)]
@@ -256,6 +231,7 @@ def draw_move_ranges(
             sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
             poly = diamond_points(sx, sy, S.TILE_W, S.TILE_H)
             pg.draw.polygon(overlay, C.MOVE_YELLOW_FILL, poly)
+        # Outline once at the end to reduce overdrawing
         for (i, j) in yellow:
             sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
             poly = diamond_points(sx, sy, S.TILE_W, S.TILE_H)
@@ -312,29 +288,27 @@ def cover_full_on_facing(target: Coord, shooter: Coord, tmap: TileMap) -> bool:
     return side in tmap.blocked
 
 
-def calc_shot_chances(shooter: Coord, target: Coord, tmap: TileMap, aim_delta: int = 0) -> Optional[tuple[int, int]]:
+def calc_shot_chances(shooter: Coord, target: Coord, tmap: TileMap) -> Optional[tuple[int, int]]:
     if not has_los(shooter, target, set(tmap.blocked)):
         return None
-    aim = S.BASE_AIM + aim_delta
+    aim = S.BASE_AIM
     defense = 0
     flanked = not cover_full_on_facing(target, shooter, tmap)
     if not flanked:
         defense += S.COVER_FULL_DEF
+    else:
+        aim += S.FLANK_AIM
     hit = max(S.HIT_FLOOR, min(S.HIT_CEIL, aim - defense))
     crit = max(0, min(100, S.BASE_CRIT + (S.FLANK_CRIT if flanked else 0)))
     return hit, crit
 
 
-def draw_shot_preview(surface: pg.Surface, font: pg.font.Font, shooter_unit: Unit, hovered: Coord, tmap: TileMap, enemies: List[Enemy]) -> None:
-    if get_enemy_at(enemies, hovered) is None:
+def draw_shot_preview(surface: pg.Surface, font: pg.font.Font, shooter: Coord, hovered: Coord, tmap: TileMap, enemies: Dict[Coord, int]) -> None:
+    if hovered not in enemies:
         return
     sx, sy = grid_to_screen(*hovered, S.TILE_W, S.TILE_H, S.ORIGIN)
     cx, cy = sx, sy + S.TILE_H // 2
-    # If shooter is dry, show a hint but still allow LOS preview below
-    if not shooter_unit.has_ammo():
-        txt_na = font.render("NO AMMO", True, C.KILL_TEXT)
-        surface.blit(txt_na, (cx - txt_na.get_width() // 2, cy - S.TILE_H - 16))
-    chances = calc_shot_chances(shooter_unit.grid, hovered, tmap)
+    chances = calc_shot_chances(shooter, hovered, tmap)
     if chances is None:
         txt = font.render("NO LOS", True, C.SHOT_NLOS)
         surface.blit(txt, (cx - txt.get_width() // 2, cy - S.TILE_H))
@@ -346,82 +320,28 @@ def draw_shot_preview(surface: pg.Surface, font: pg.font.Font, shooter_unit: Uni
     surface.blit(txt, (cx - txt.get_width() // 2, cy - S.TILE_H))
 
 
-def resolve_shot(rng: random.Random, shooter: Unit, target_tile: Coord, tmap: TileMap, enemies: List[Enemy], log: List[str], aim_delta: int = 0, tag: str = "Shot") -> None:
-    # Ammo/AP checks
-    if shooter.is_moving():
+def resolve_shot(rng: random.Random, shooter: Unit, target_tile: Coord, tmap: TileMap, enemies: Dict[Coord, int], log: List[str]) -> None:
+    if shooter.ap < S.SHOOT_AP_COST or shooter.is_moving():
         return
-    target = get_enemy_at(enemies, target_tile)
-    if target is None:
+    chances = calc_shot_chances(shooter.grid, target_tile, tmap)
+    if chances is None or target_tile not in enemies:
         return
-    if tag == "Shot":
-        if shooter.ap < S.SHOOT_AP_COST:
-            return
-        if not shooter.has_ammo():
-            log.append("Click: OUT OF AMMO (press R to reload)")
-            return
-    else:  # OVERWATCH shot
-        if not shooter.has_ammo():
-            # Nothing happens, OW will be cleared by caller
-            return
-
-    chances = calc_shot_chances(shooter.grid, target_tile, tmap, aim_delta=aim_delta)
-    if chances is None:
-        return
-
     hit_ch, crit_ch = chances
     roll = rng.randint(1, 100)
     if roll <= hit_ch:
         crit_roll = rng.randint(1, 100)
         is_crit = crit_roll <= crit_ch
         dmg = rng.randint(S.WEAPON_DMG_MIN, S.WEAPON_DMG_MAX) + (S.CRIT_BONUS_DMG if is_crit else 0)
-        target.hp -= dmg
-        msg = f"{tag} {target_tile}: HIT for {dmg}{' (CRIT)' if is_crit else ''}"
-        if target.hp <= 0:
-            enemies.remove(target)
+        enemies[target_tile] -= dmg
+        shooter.ap -= S.SHOOT_AP_COST
+        msg = f"Shot {target_tile}: HIT for {dmg}{' (CRIT)' if is_crit else ''}"
+        if enemies[target_tile] <= 0:
+            del enemies[target_tile]
             msg += " — KILL"
         log.append(msg)
     else:
-        log.append(f"{tag} {target_tile}: MISS")
-
-    # Spend resources
-    shooter.spend_ammo()
-    if tag == "Shot":
         shooter.ap -= S.SHOOT_AP_COST
-
-
-# ---------- Enemy phase & overwatch ----------
-
-def plan_enemy_paths(enemies: List[Enemy], squad: List[Unit], tmap: TileMap) -> Dict[Enemy, List[Coord]]:
-    """For each enemy, path toward nearest soldier. Paths exclude final tile if occupied by soldier."""
-    occ_squad = {u.grid for u in squad}
-    occ_en = {e.grid for e in enemies}
-    blocked_static = set(tmap.blocked)
-
-    plans: Dict[Enemy, List[Coord]] = {}
-    for e in enemies:
-        best_path: List[Coord] = []
-        best_len = 10**9
-        for u in squad:
-            blocked = blocked_static | (occ_squad - {u.grid}) | (occ_en - {e.grid})
-            path = a_star(e.grid, u.grid, S.GRID_COLS, S.GRID_ROWS, blocked)
-            if path and len(path) < best_len:
-                best_path = path
-                best_len = len(path)
-        if best_path:
-            plans[e] = best_path
-    return plans
-
-
-def process_overwatch_triggers(rng: random.Random, squad: List[Unit], mover: Enemy, tmap: TileMap, enemies: List[Enemy], log: List[str]) -> None:
-    """Any unit on OW with LOS to mover gets a reaction shot (with aim malus)."""
-    for u in squad:
-        if not getattr(u, "overwatch", False):
-            continue
-        if has_los(u.grid, mover.grid, set(tmap.blocked)):
-            resolve_shot(rng, u, mover.grid, tmap, enemies, log, aim_delta=-S.OVERWATCH_AIM_MALUS, tag="OVERWATCH")
-            u.clear_overwatch()
-            if get_enemy_at(enemies, mover.grid) is None:
-                break
+        log.append(f"Shot {target_tile}: MISS")
 
 
 # ---------- Debug HUD ----------
@@ -435,7 +355,7 @@ def draw_debug(
     path_info: tuple[int, int] | None,
     tm: TurnManager,
     inspect_tile: Coord | None,
-    enemies: List[Enemy],
+    enemies: Dict[Coord, int],
     log: List[str],
 ) -> None:
     phase_txt = "PLAYER" if tm.phase is Phase.PLAYER else "ENEMY"
@@ -443,16 +363,17 @@ def draw_debug(
     lines = [
         f"Turn: {tm.turn}   Phase: {phase_txt}",
         f"Hovered: {hovered}" if hovered is not None else "Hovered: None",
-        f"Selected@{selected.grid if selected else None}  AP: {selected.ap if selected else 0}/{selected.ap_max if selected else 0}  AMMO: {selected.ammo if selected else 0}/{selected.clip_max if selected else 0}  {'[OW]' if (selected and getattr(selected, 'overwatch', False)) else ''}",
+        f"Selected idx: {sel_idx}  Grid: {selected.grid if selected else None}  AP: {selected.ap if selected else 0}/{selected.ap_max if selected else 0}",
         f"Inspect origin: {inspect_tile}",
         f"Enemies: {len(enemies)}",
         f"Origin: {S.ORIGIN}  Tile: {S.TILE_W}x{S.TILE_H}  Grid: {S.GRID_COLS}x{S.GRID_ROWS}",
         f"1 AP tiles: {S.MOVEMENT_TILES_PER_AP} (dash=2x)",
-        "Controls: TAB cycle | 1-9 select | L-Click select/move | F fire | O overwatch | R reload | N place/remove enemy | B toggle obstacle | ENTER/E end turn | ESC quit",
+        "TAB: cycle unit   NUM[1..9]: select   ENTER/E: end turn   L-Click: select/move   R-Click: set/clear INSPECT tile   N: toggle enemy   F: fire at hovered enemy   B: toggle obstacle   R: refill AP (selected)   ESC: quit",
     ]
     if path_info is not None:
         steps, ap_cost = path_info
         lines.insert(5, f"Path steps: {steps}   AP cost: {ap_cost}")
+    # recent log (last 4)
     for entry in log[-4:]:
         lines.append(entry)
 
@@ -469,7 +390,7 @@ def main() -> int:
     pg.init()
     try:
         screen = pg.display.set_mode((S.WINDOW_W, S.WINDOW_H))
-        pg.display.set_caption("XCOM Iso — Overwatch, Enemy AI, Inspect, Firing & Ammo")
+        pg.display.set_caption("XCOM Iso — Squad, LOS, Cover, Inspect & Firing")
         clock = pg.time.Clock()
         font = pg.font.SysFont("consolas", 16)
 
@@ -480,18 +401,14 @@ def main() -> int:
         sel_idx = 0
         tm = TurnManager()
 
-        enemies: List[Enemy] = []
+        enemies: Dict[Coord, int] = {}
         inspect_tile: Coord | None = None
         pending_dest: Dict[Unit, Coord] = {}
         log: List[str] = []
 
-        enemy_plans: Optional[Dict[Enemy, List[Coord]]] = None
-        enemy_step_timer = 0.0
-        enemy_steps_left: Dict[Enemy, int] = {}
-
         running = True
         while running:
-            dt = clock.tick(S.FPS) / 1000.0
+            dt = clock.tick(S.FPS) / 1000.0  # seconds
 
             for e in pg.event.get():
                 if e.type == pg.QUIT:
@@ -499,72 +416,62 @@ def main() -> int:
                 elif e.type == pg.KEYDOWN:
                     if e.key == pg.K_ESCAPE:
                         running = False
-                    elif tm.phase is Phase.PLAYER:
-                        if e.key == pg.K_TAB:
-                            if squad:
-                                start = (sel_idx + 1) % len(squad)
-                                idx = start
-                                chosen = start
-                                for _ in range(len(squad)):
-                                    if not squad[idx].is_moving() and squad[idx].ap > 0:
-                                        chosen = idx
-                                        break
-                                    idx = (idx + 1) % len(squad)
-                                sel_idx = chosen
-                        elif pg.K_1 <= e.key <= pg.K_9:
-                            k = e.key - pg.K_1
-                            if k < len(squad):
-                                sel_idx = k
-                        elif e.key == pg.K_b:
-                            hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
-                            if tmap.in_bounds(hov) and get_unit_at(squad, hov) is None and get_enemy_at(enemies, hov) is None:
-                                tmap.toggle_block(hov)
+                    elif e.key == pg.K_TAB and tm.phase is Phase.PLAYER:
+                        # Cycle to next unit (prefer one with AP > 0 and not moving)
+                        if squad:
+                            start = (sel_idx + 1) % len(squad)
+                            idx = start
+                            chosen = start
+                            for _ in range(len(squad)):
+                                if not squad[idx].is_moving() and squad[idx].ap > 0:
+                                    chosen = idx
+                                    break
+                                idx = (idx + 1) % len(squad)
+                            sel_idx = chosen
+                    elif pg.K_1 <= e.key <= pg.K_9 and tm.phase is Phase.PLAYER:
+                        k = e.key - pg.K_1
+                        if k < len(squad):
+                            sel_idx = k
+                    elif e.key == pg.K_b and tm.phase is Phase.PLAYER:
+                        hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
+                        # Only toggle if no unit or enemy occupies the tile
+                        if tmap.in_bounds(hov) and get_unit_at(squad, hov) is None and hov not in enemies:
+                            tmap.toggle_block(hov)
                             if inspect_tile == hov:
                                 inspect_tile = None
-                        elif e.key == pg.K_n:
-                            hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
-                            if tmap.in_bounds(hov) and hov not in tmap.blocked and get_unit_at(squad, hov) is None:
-                                ex = get_enemy_at(enemies, hov)
-                                if ex:
-                                    enemies.remove(ex)
-                                else:
-                                    enemies.append(Enemy(hov, getattr(S, "ENEMY_DEFAULT_HP", 3)))
-                            if inspect_tile == hov:
-                                inspect_tile = None
-                        elif e.key == pg.K_f:
-                            sel = squad[sel_idx]
-                            hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
-                            resolve_shot(rng, sel, hov, tmap, enemies, log, tag="Shot")
-                        elif e.key == pg.K_o:
-                            if squad[sel_idx].set_overwatch(getattr(S, "OVERWATCH_AP_COST", 1)):
-                                log.append(f"Unit@{squad[sel_idx].grid} set OVERWATCH")
-                        elif e.key == pg.K_r:
-                            if squad[sel_idx].reload(S.RELOAD_AP_COST):
-                                log.append(f"Reloaded @ {squad[sel_idx].grid}")
+                    elif e.key == pg.K_n and tm.phase is Phase.PLAYER:
+                        hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
+                        if tmap.in_bounds(hov) and hov not in tmap.blocked and get_unit_at(squad, hov) is None:
+                            if hov in enemies:
+                                del enemies[hov]
                             else:
-                                if squad[sel_idx].ammo >= squad[sel_idx].clip_max:
-                                    log.append("Reload: clip already full")
-                                elif squad[sel_idx].ap < S.RELOAD_AP_COST:
-                                    log.append("Reload: not enough AP")
-                        elif e.key in (pg.K_RETURN, pg.K_e):
-                            if all(not u.is_moving() for u in squad):
-                                tm.end_player_turn()
-                                enemy_plans = plan_enemy_paths(enemies, squad, tmap)
-                                enemy_steps_left = {en: min(getattr(S, "ENEMY_STEPS_PER_TURN", 3), len(path)) for en, path in (enemy_plans or {}).items()}
-                                enemy_step_timer = 0.0
+                                enemies[hov] = 3  # demo HP
+                            if inspect_tile == hov:
+                                inspect_tile = None
+                    elif e.key == pg.K_f and tm.phase is Phase.PLAYER:
+                        sel = squad[sel_idx]
+                        hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
+                        if hov in enemies:
+                            resolve_shot(rng, sel, hov, tmap, enemies, log)
+                    elif e.key == pg.K_r and tm.phase is Phase.PLAYER:
+                        squad[sel_idx].ap = squad[sel_idx].ap_max
+                    elif e.key in (pg.K_RETURN, pg.K_e):
+                        if tm.phase is Phase.PLAYER and all(not u.is_moving() for u in squad):
+                            tm.end_player_turn()
                 elif e.type == pg.MOUSEBUTTONDOWN and tm.phase is Phase.PLAYER:
                     i, j = screen_to_grid(*e.pos, S.TILE_W, S.TILE_H, S.ORIGIN)
                     tile = (i, j)
                     if e.button == 1:
+                        # Left-click: select unit if clicked on one; else try to move selected unit.
                         u_on_tile = get_unit_at(squad, tile)
                         if u_on_tile is not None:
                             sel_idx = squad.index(u_on_tile)
                         else:
                             sel = squad[sel_idx]
-                            if tmap.in_bounds(tile) and tmap.passable(tile) and get_enemy_at(enemies, tile) is None:
-                                occ = occupied_tiles(squad, exclude=sel) | {e.grid for e in enemies}
+                            if tmap.in_bounds(tile) and tmap.passable(tile) and tile not in enemies:
+                                occ = occupied_tiles(squad, exclude=sel)
                                 if tile not in occ:
-                                    blocked = set(tmap.blocked) | occ
+                                    blocked = set(tmap.blocked) | occ | set(enemies.keys())
                                     path = a_star(sel.grid, tile, S.GRID_COLS, S.GRID_ROWS, blocked)
                                     if path:
                                         steps = len(path)
@@ -573,6 +480,7 @@ def main() -> int:
                                             sel.set_path(path, ap_cost)
                                             pending_dest[sel] = tile
                     elif e.button == 3:
+                        # Right-click: toggle INSPECT tile for planning overlays (no move)
                         if tmap.in_bounds(tile):
                             inspect_tile = None if inspect_tile == tile else tile
 
@@ -583,73 +491,48 @@ def main() -> int:
                     u.set_grid_immediate(pending_dest[u])
                     del pending_dest[u]
 
-            # Enemy phase simulation
-            if tm.phase is Phase.ENEMY:
-                enemy_step_timer += dt
-                if enemy_plans is None:
-                    enemy_plans = plan_enemy_paths(enemies, squad, tmap)
-                    enemy_steps_left = {en: min(getattr(S, "ENEMY_STEPS_PER_TURN", 3), len(path)) for en, path in enemy_plans.items()}
-                while enemy_step_timer >= getattr(S, "ENEMY_STEP_TIME", 0.3):
-                    enemy_step_timer -= getattr(S, "ENEMY_STEP_TIME", 0.3)
-                    anyone_moved = False
-                    occupied_now = {e.grid for e in enemies} | {u.grid for u in squad} | set(tmap.blocked)
-                    for en in list(enemies):
-                        path = (enemy_plans or {}).get(en, [])
-                        if enemy_steps_left.get(en, 0) <= 0 or not path:
-                            continue
-                        next_tile = path[0]
-                        if next_tile in occupied_now:
-                            continue
-                        en.grid = next_tile
-                        enemy_plans[en] = path[1:]
-                        enemy_steps_left[en] -= 1
-                        anyone_moved = True
-
-                        process_overwatch_triggers(rng, squad, en, tmap, enemies, log)
-                        occupied_now = {e.grid for e in enemies} | {u.grid for u in squad} | set(tmap.blocked)
-
-                    if not anyone_moved:
-                        break
-
-                still_moving = any(enemy_steps_left.get(en, 0) > 0 and enemy_plans.get(en) for en in enemies)
-                if not still_moving:
-                    tm.complete_enemy_turn()
-                    for u in squad:
-                        u.ap = u.ap_max
-                        u.clear_overwatch()
-                    enemy_plans = None
-                    enemy_steps_left = {}
+            # Turn manager
+            started_player_turn = tm.update(dt)
+            if started_player_turn:
+                for u in squad:
+                    u.ap = u.ap_max
 
             # Draw
             screen.fill(C.BG)
             draw_grid(screen)
             draw_obstacles(screen, tmap)
+
+            # Enemies
             draw_enemies(screen, enemies)
 
             sel = squad[sel_idx] if squad else None
-
-            # Ranges & preview origin: INSPECT tile if set, else selected unit
+            # AP rings + path preview origin: inspection override if set, else selected unit grid
             origin_for_ranges = inspect_tile if inspect_tile is not None else (sel.grid if sel else None)
-            occ = occupied_tiles(squad, exclude=sel) | {e.grid for e in enemies}
-            blocked = set(tmap.blocked) | occ
+            occ = occupied_tiles(squad, exclude=sel) if sel else set()
+            blocked = set(tmap.blocked) | occ | set(enemies.keys())
             available_ap = sel.ap if (sel and tm.phase is Phase.PLAYER) else 0
             draw_move_ranges(screen, origin_for_ranges, tmap, available_ap, blocked)
 
             hovered = draw_hover(screen, pg.mouse.get_pos())
-            path_info = draw_path_preview(screen, origin_for_ranges, hovered, tmap, blocked) if tm.phase is Phase.PLAYER else None
+            path_info = (
+                draw_path_preview(screen, origin_for_ranges, hovered, tmap, blocked)
+                if tm.phase is Phase.PLAYER
+                else None
+            )
 
-            # Cover pips on hovered tile
+            # Cover pips on hovered tile (what cover you'd get if you stood there)
             if hovered:
                 draw_cover_pips(screen, hovered, tmap)
 
-            # LOS & flank + shot preview when hovering an enemy
-            if hovered and get_enemy_at(enemies, hovered) and sel:
+            # LOS & flank preview if hovering an enemy
+            if hovered and hovered in enemies and sel:
                 draw_los_and_flank(screen, sel.grid, hovered, tmap, font)
-                draw_shot_preview(screen, font, sel, hovered, tmap, enemies)
+                # Also show shot percentages
+                draw_shot_preview(screen, font, sel.grid, hovered, tmap, enemies)
 
+            # Units & selections
             for i, u in enumerate(squad):
                 draw_unit(screen, u, selected=(i == sel_idx))
-
             draw_tile_selection(screen, inspect_tile)
 
             draw_debug(screen, font, hovered, squad, sel_idx, path_info, tm, inspect_tile, enemies, log)

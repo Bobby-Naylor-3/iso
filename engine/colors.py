@@ -48,3 +48,12 @@ KILL_TEXT = (255, 90, 90)
 # Overwatch
 OVERWATCH_RING = (120, 210, 255)
 OVERWATCH_TEXT = (150, 220, 255)
+# Ammo pips
+AMMO_FULL = (255, 255, 255)
+AMMO_EMPTY = (80, 80, 80)
+# Crates (half-cover props)
+CRATE_FILL = (140, 120, 60)
+CRATE_OUTLINE = (200, 180, 100)
+
+# Half-cover pip
+COVER_HALF = (180, 220, 255)

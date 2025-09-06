@@ -1,4 +1,11 @@
 from __future__ import annotations
+# Resilient import for settings so engine.unit can read CLIP_SIZE without crashing
+try:
+    import settings as S  # project-level settings
+except Exception:  # settings not importable in some tooling contexts
+    class _SettingsStub:  # minimal stub to keep module safe
+        pass
+    S = _SettingsStub()
 from typing import List, Tuple, Optional
 from collections import deque
 import math
@@ -15,6 +22,7 @@ class Unit:
         self.origin = origin
         self.speed = speed_pps
         self.overwatch = False
+        
 
         cx, cy = tile_center(*self.grid, self.tile_w, self.tile_h, self.origin)
         self.pos_x = float(cx)
@@ -25,7 +33,9 @@ class Unit:
 
         self.ap_max = 2
         self.ap = 2
-
+        # --- Ammo / clip ---
+        self.clip_max = getattr(S, "CLIP_SIZE", 3)
+        self.ammo = self.clip_max
     def can_afford(self, ap_cost: int) -> bool:
         return ap_cost > 0 and ap_cost <= self.ap
 
@@ -89,9 +99,10 @@ class Unit:
         cx, cy = tile_center(*self.grid, self.tile_w, self.tile_h, self.origin)
         self.pos_x = float(cx)
         self.pos_y = float(cy)
-        # --- Overwatch ---
+    
+    # --- Overwatch ---
     def set_overwatch(self, ap_cost: int) -> bool:
-        if self.is_moving() or self.overwatch or self.ap < ap_cost:
+        if self.is_moving() or self.overwatch or self.ap < ap_cost or not self.has_ammo():
             return False
         self.ap -= ap_cost
         self.overwatch = True
@@ -99,4 +110,21 @@ class Unit:
 
     def clear_overwatch(self) -> None:
         self.overwatch = False
+    
+    # --- Ammo / reload ---
+    def has_ammo(self) -> bool:
+        return self.ammo > 0
+
+    def spend_ammo(self) -> bool:
+        if self.ammo <= 0:
+            return False
+        self.ammo -= 1
+        return True
+
+    def reload(self, ap_cost: int) -> bool:
+        if self.is_moving() or self.ap < ap_cost or self.ammo >= self.clip_max:
+            return False
+        self.ap -= ap_cost
+        self.ammo = self.clip_max
+        return True
 
