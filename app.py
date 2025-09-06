@@ -368,7 +368,7 @@ def resolve_shot(rng: random.Random, shooter: Unit, target_tile: Coord, tmap: Ti
     if chances is None:
         return
 
-    hit_ch, crit_ch = chances
+    hit_ch, crit_ch, _ctag = chances
     roll = rng.randint(1, 100)
     if roll <= hit_ch:
         crit_roll = rng.randint(1, 100)
@@ -445,7 +445,7 @@ def draw_debug(
         f"Hovered: {hovered}" if hovered is not None else "Hovered: None",
         f"Selected@{selected.grid if selected else None}  AP: {selected.ap if selected else 0}/{selected.ap_max if selected else 0}  AMMO: {selected.ammo if selected else 0}/{selected.clip_max if selected else 0}  {'[OW]' if (selected and getattr(selected, 'overwatch', False)) else ''}",
         f"Inspect origin: {inspect_tile}",
-        f"Enemies: {len(enemies)}",
+        f"Enemies: {len(enemies)}   Walls:{len(tmap.blocked)}  Crates:{len(getattr(tmap, 'crates', set()))}",
         f"Origin: {S.ORIGIN}  Tile: {S.TILE_W}x{S.TILE_H}  Grid: {S.GRID_COLS}x{S.GRID_ROWS}",
         f"1 AP tiles: {S.MOVEMENT_TILES_PER_AP} (dash=2x)",
         "Controls: TAB cycle | 1-9 select | L-Click select/move | F fire | O overwatch | R reload | N place/remove enemy | B toggle obstacle | ENTER/E end turn | ESC quit",
@@ -521,6 +521,12 @@ def main() -> int:
                                 tmap.toggle_block(hov)
                             if inspect_tile == hov:
                                 inspect_tile = None
+
+elif e.key == pg.K_h:
+    hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
+    if tmap.in_bounds(hov) and get_unit_at(squad, hov) is None and get_enemy_at(enemies, hov) is None and hov not in tmap.blocked:
+        if hasattr(tmap, "toggle_crate"):
+            tmap.toggle_crate(hov)
                         elif e.key == pg.K_n:
                             hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
                             if tmap.in_bounds(hov) and hov not in tmap.blocked and get_unit_at(squad, hov) is None:
@@ -624,6 +630,7 @@ def main() -> int:
             screen.fill(C.BG)
             draw_grid(screen)
             draw_obstacles(screen, tmap)
+            draw_crates(screen, tmap)
             draw_enemies(screen, enemies)
 
             sel = squad[sel_idx] if squad else None
