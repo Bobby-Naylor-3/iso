@@ -40,6 +40,14 @@ def draw_obstacles(surface: pg.Surface, tmap: TileMap) -> None:
         pg.draw.polygon(surface, C.OBSTACLE_FILL, poly)
         pg.draw.polygon(surface, C.OBSTACLE_OUTLINE, poly, width=2)
 
+def draw_crates(surface: pg.Surface, tmap: TileMap) -> None:
+    for (i, j) in tmap.crates:
+        sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
+        poly = diamond_points(sx, sy, S.TILE_W, S.TILE_H)
+        # draw a smaller “box” impression (diamond inset)
+        inset = [(int(x + (sx - x) * 0.2), int(y + (sy + S.TILE_H // 2 - y) * 0.2)) for (x, y) in poly]
+        pg.draw.polygon(surface, C.CRATE_FILL, inset)
+        pg.draw.polygon(surface, C.CRATE_OUTLINE, inset, width=2)
 
 def draw_hover(surface: pg.Surface, mouse_pos: tuple[int, int]) -> tuple[int, int] | None:
     """Highlight the tile under the mouse; return (i, j) or None."""
@@ -177,6 +185,21 @@ def draw_cover_pips(surface: pg.Surface, tile: Coord, tmap: TileMap) -> None:
         else:
             pg.draw.polygon(surface, C.COVER_NONE, tri, width=1)
 
+# ---------- Vision / Fog of War ----------
+def compute_visible_tiles(units: List[Unit], tmap: TileMap) -> Set[Coord]:
+    visible: Set[Coord] = set()
+    walls = set(tmap.blocked)  # only walls block vision
+    R = S.VISION_RANGE_TILES
+    for u in units:
+        ui, uj = u.grid
+        for j in range(max(0, uj - R), min(S.GRID_ROWS, uj + R + 1)):
+            for i in range(max(0, ui - R), min(S.GRID_COLS, ui + R + 1)):
+                if manhattan((ui, uj), (i, j)) > R:
+                    continue
+                if has_los((ui, uj), (i, j), walls):
+                    visible.add((i, j))
+        visible.add(u.grid)
+    return visible
 
 def facing_side(from_tile: Coord, to_tile: Coord) -> str:
     """Which side of 'to_tile' faces 'from_tile' (dominant axis)."""
@@ -295,7 +318,18 @@ def draw_path_preview(
     steps = len(path)
     ap_cost = math.ceil(steps / S.MOVEMENT_TILES_PER_AP) if steps > 0 else 0
     return steps, ap_cost
+def draw_selection(surface: pg.Surface, selected: tuple[int, int] | None) -> None:
+    if not selected:
+        return
+    i, j = selected
+    sx, sy = grid_to_screen(i, j, S.TILE_W, S.TILE_H, S.ORIGIN)
+    poly = diamond_points(sx, sy, S.TILE_W, S.TILE_H)
+    pg.draw.polygon(surface, C.SELECT_FILL, poly)
+    pg.draw.polygon(surface, C.SELECT_OUTLINE, poly, width=2)
 
+
+def manhattan(a: tuple[int, int], b: tuple[int, int]) -> int:
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 # ---------- Shooting (preview & resolution) ----------
 
@@ -386,7 +420,8 @@ def resolve_shot(rng: random.Random, shooter: Unit, target_tile: Coord, tmap: Ti
     # Spend resources
     shooter.spend_ammo()
     if tag == "Shot":
-        shooter.ap -= S.SHOOT_AP_COST
+        # Firing is turn-ending in classic XCOM. Zero out remaining AP.
+        shooter.ap = 0
 
 
 # ---------- Enemy phase & overwatch ----------
@@ -422,7 +457,48 @@ def process_overwatch_triggers(rng: random.Random, squad: List[Unit], mover: Ene
             u.clear_overwatch()
             if get_enemy_at(enemies, mover.grid) is None:
                 break
+# ---------- Action bar ----------
+def _btn_rects() -> list[pg.Rect]:
+    W, H = S.WINDOW_W, S.WINDOW_H
+    bar_h = S.UI_BAR_H
+    x = 10
+    y = H - bar_h + (bar_h - S.UI_BTN_H)//2
+    rects = []
+    for _ in range(4):  # Fire, Overwatch, Reload, End Turn
+        rects.append(pg.Rect(x, y, S.UI_BTN_W, S.UI_BTN_H))
+        x += S.UI_BTN_W + S.UI_BTN_GAP
+    return rects
+def _draw_button(surface: pg.Surface, rect: pg.Rect, label: str, enabled: bool, mouse_pos: tuple[int,int]) -> None:
+    hover = rect.collidepoint(mouse_pos)
+    if not enabled:
+        fill = C.UI_BTN_DISABLED
+    else:
+        fill = C.UI_BTN_HOVER if hover else C.UI_BTN
+    pg.draw.rect(surface, fill, rect, border_radius=8)
+    pg.draw.rect(surface, C.UI_FRAME, rect, width=2, border_radius=8)
+    font_btn = pg.font.SysFont("consolas", 18)
+    txt = font_btn.render(label, True, C.UI_BTN_TEXT if enabled else (180,180,185))
+def draw_action_bar(surface: pg.Surface, sel: Unit, hovered: Coord | None, tmap: TileMap, enemies: List[Enemy], tm: TurnManager, squad: List[Unit], visible: Set[Coord]) -> dict[str, pg.Rect]:
+    W, H = S.WINDOW_W, S.WINDOW_H
+    bar = pg.Rect(0, H - S.UI_BAR_H, W, S.UI_BAR_H)
+    pg.draw.rect(surface, C.UI_BG, bar)
+    pg.draw.rect(surface, C.UI_FRAME, bar, width=2)
 
+    can_fire = False
+    if tm.phase is Phase.PLAYER and not sel.is_moving() and sel.ap > 0 and sel.has_ammo() and hovered is not None and any(e.grid == hovered for e in enemies) and hovered in visible:
+        can_fire = calc_shot_chances(sel.grid, hovered, tmap) is not None
+
+    can_ow   = tm.phase is Phase.PLAYER and not sel.is_moving() and sel.ap > 0 and sel.has_ammo() and not sel.overwatch
+    can_rel  = tm.phase is Phase.PLAYER and not sel.is_moving() and sel.ap >= S.RELOAD_AP_COST and sel.ammo < sel.clip_max
+    can_end  = tm.phase is Phase.PLAYER and all(not u.is_moving() for u in squad)
+
+    r_fire, r_ow, r_rel, r_end = _btn_rects()
+    _draw_button(surface, r_fire, "Fire (F)", can_fire, pg.mouse.get_pos())
+    _draw_button(surface, r_ow,   "Overwatch (O)", can_ow, pg.mouse.get_pos())
+    _draw_button(surface, r_rel,  "Reload (R)", can_rel, pg.mouse.get_pos())
+    _draw_button(surface, r_end,  "End Turn (Enter)", can_end, pg.mouse.get_pos())
+
+    return {"fire": r_fire, "ow": r_ow, "reload": r_rel, "end": r_end}
 
 # ---------- Debug HUD ----------
 
@@ -437,6 +513,7 @@ def draw_debug(
     inspect_tile: Coord | None,
     enemies: List[Enemy],
     log: List[str],
+    tmap: TileMap
 ) -> None:
     phase_txt = "PLAYER" if tm.phase is Phase.PLAYER else "ENEMY"
     selected = units[sel_idx] if units else None
@@ -448,7 +525,7 @@ def draw_debug(
         f"Enemies: {len(enemies)}   Walls:{len(tmap.blocked)}  Crates:{len(getattr(tmap, 'crates', set()))}",
         f"Origin: {S.ORIGIN}  Tile: {S.TILE_W}x{S.TILE_H}  Grid: {S.GRID_COLS}x{S.GRID_ROWS}",
         f"1 AP tiles: {S.MOVEMENT_TILES_PER_AP} (dash=2x)",
-        "Controls: TAB cycle | 1-9 select | L-Click select/move | F fire | O overwatch | R reload | N place/remove enemy | B toggle obstacle | ENTER/E end turn | ESC quit",
+        "Controls: TAB cycle | 1-9 select | L-Click select/move | F fire (turn-ending) | O overwatch (turn-ending) | R reload (1 AP) | N enemy | B wall | H crate | ENTER/E end turn | ESC quit",
     ]
     if path_info is not None:
         steps, ap_cost = path_info
@@ -522,11 +599,11 @@ def main() -> int:
                             if inspect_tile == hov:
                                 inspect_tile = None
 
-elif e.key == pg.K_h:
-    hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
-    if tmap.in_bounds(hov) and get_unit_at(squad, hov) is None and get_enemy_at(enemies, hov) is None and hov not in tmap.blocked:
-        if hasattr(tmap, "toggle_crate"):
-            tmap.toggle_crate(hov)
+                        elif e.key == pg.K_h:
+                            hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
+                            if tmap.in_bounds(hov) and get_unit_at(squad, hov) is None and get_enemy_at(enemies, hov) is None and hov not in tmap.blocked:
+                                if hasattr(tmap, "toggle_crate"):
+                                    tmap.toggle_crate(hov)
                         elif e.key == pg.K_n:
                             hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
                             if tmap.in_bounds(hov) and hov not in tmap.blocked and get_unit_at(squad, hov) is None:
@@ -559,28 +636,64 @@ elif e.key == pg.K_h:
                                 enemy_steps_left = {en: min(getattr(S, "ENEMY_STEPS_PER_TURN", 3), len(path)) for en, path in (enemy_plans or {}).items()}
                                 enemy_step_timer = 0.0
                 elif e.type == pg.MOUSEBUTTONDOWN and tm.phase is Phase.PLAYER:
-                    i, j = screen_to_grid(*e.pos, S.TILE_W, S.TILE_H, S.ORIGIN)
-                    tile = (i, j)
+
+                    # Action bar click test (left-click on UI buttons)
                     if e.button == 1:
-                        u_on_tile = get_unit_at(squad, tile)
-                        if u_on_tile is not None:
-                            sel_idx = squad.index(u_on_tile)
-                        else:
+                        rects = _btn_rects()
+                        labels = ["fire", "ow", "reload", "end"]
+                        hit = None
+                        for rect, name in zip(rects, labels):
+                            if rect.collidepoint(e.pos):
+                                hit = name
+                                break
+                        if hit is not None:
                             sel = squad[sel_idx]
-                            if tmap.in_bounds(tile) and tmap.passable(tile) and get_enemy_at(enemies, tile) is None:
-                                occ = occupied_tiles(squad, exclude=sel) | {e.grid for e in enemies}
-                                if tile not in occ:
-                                    blocked = set(tmap.blocked) | occ
-                                    path = a_star(sel.grid, tile, S.GRID_COLS, S.GRID_ROWS, blocked)
-                                    if path:
-                                        steps = len(path)
-                                        ap_cost = math.ceil(steps / S.MOVEMENT_TILES_PER_AP)
-                                        if sel.can_afford(ap_cost):
-                                            sel.set_path(path, ap_cost)
-                                            pending_dest[sel] = tile
-                    elif e.button == 3:
-                        if tmap.in_bounds(tile):
-                            inspect_tile = None if inspect_tile == tile else tile
+                            hov = screen_to_grid(*pg.mouse.get_pos(), S.TILE_W, S.TILE_H, S.ORIGIN)
+                            if hit == "fire":
+                                if (tm.phase is Phase.PLAYER and not sel.is_moving() and sel.ap > 0 and sel.has_ammo()
+                                    and get_enemy_at(enemies, hov) and calc_shot_chances(sel.grid, hov, tmap)):
+                                    resolve_shot(rng, sel, hov, tmap, enemies, log, tag="Shot")
+                            elif hit == "ow":
+                                if sel.set_overwatch(getattr(S, "OVERWATCH_AP_COST", 1)):
+                                    log.append(f"Unit@{sel.grid} set OVERWATCH")
+                            elif hit == "reload":
+                                if sel.reload(getattr(S, "RELOAD_AP_COST", 1)):
+                                    log.append(f"Reloaded @ {sel.grid}")
+                                else:
+                                    if sel.ammo >= sel.clip_max:
+                                        log.append("Reload: clip already full")
+                                    elif sel.ap < getattr(S, "RELOAD_AP_COST", 1):
+                                        log.append("Reload: not enough AP")
+                            elif hit == "end":
+                                if all(not u.is_moving() for u in squad):
+                                    tm.end_player_turn()
+                                    enemy_plans = plan_enemy_paths(enemies, squad, tmap)
+                                    enemy_steps_left = {en: min(getattr(S, "ENEMY_STEPS_PER_TURN", 3), len(path)) for en, path in (enemy_plans or {}).items()}
+                                    enemy_step_timer = 0.0
+                            # # Prevent world-click logic when clicking UI
+                            # continue
+                            #     i, j = screen_to_grid(*e.pos, S.TILE_W, S.TILE_H, S.ORIGIN)
+                            #     tile = (i, j)
+                            #     if e.button == 1:
+                            #         u_on_tile = get_unit_at(squad, tile)
+                            #         if u_on_tile is not None:
+                            #             sel_idx = squad.index(u_on_tile)
+                            #         else:
+                            #             sel = squad[sel_idx]
+                            #             if tmap.in_bounds(tile) and tmap.passable(tile) and get_enemy_at(enemies, tile) is None:
+                            #                 occ = occupied_tiles(squad, exclude=sel) | {e.grid for e in enemies}
+                            #                 if tile not in occ:
+                            #                     blocked = set(tmap.blocked) | occ
+                            #                     path = a_star(sel.grid, tile, S.GRID_COLS, S.GRID_ROWS, blocked)
+                            #                     if path:
+                            #                         steps = len(path)
+                            #                         ap_cost = math.ceil(steps / S.MOVEMENT_TILES_PER_AP)
+                            #                         if sel.can_afford(ap_cost):
+                            #                             sel.set_path(path, ap_cost)
+                            #                             pending_dest[sel] = tile
+                            #     elif e.button == 3:
+                            #         if tmap.in_bounds(tile):
+                            #             inspect_tile = None if inspect_tile == tile else tile
 
             # Update units
             for u in squad:
@@ -625,7 +738,7 @@ elif e.key == pg.K_h:
                         u.clear_overwatch()
                     enemy_plans = None
                     enemy_steps_left = {}
-
+            visible = compute_visible_tiles(squad, tmap)
             # Draw
             screen.fill(C.BG)
             draw_grid(screen)
@@ -658,8 +771,11 @@ elif e.key == pg.K_h:
                 draw_unit(screen, u, selected=(i == sel_idx))
 
             draw_tile_selection(screen, inspect_tile)
+            # Action bar
+            rects = draw_action_bar(screen, sel, hovered, tmap, enemies, tm, squad, visible)
 
-            draw_debug(screen, font, hovered, squad, sel_idx, path_info, tm, inspect_tile, enemies, log)
+
+            draw_debug(screen, font, hovered, squad, sel_idx, path_info, tm, inspect_tile, enemies, log, tmap)
 
             pg.display.flip()
 

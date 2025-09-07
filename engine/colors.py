@@ -57,3 +57,14 @@ CRATE_OUTLINE = (200, 180, 100)
 
 # Half-cover pip
 COVER_HALF = (180, 220, 255)
+# Action bar UI
+UI_BG = (15, 18, 24)
+UI_FRAME = (40, 45, 55)
+UI_TEXT = (230, 230, 235)
+UI_BTN = (60, 110, 170)
+UI_BTN_HOVER = (80, 140, 210)
+UI_BTN_DISABLED = (70, 70, 75)
+UI_BTN_TEXT = (245, 245, 250)
+
+# Labels
+DASH_TEXT = (255, 235, 120)

@@ -104,8 +104,10 @@ class Unit:
     def set_overwatch(self, ap_cost: int) -> bool:
         if self.is_moving() or self.overwatch or self.ap < ap_cost or not self.has_ammo():
             return False
+        # Spend the AP to set OW, then treat it as turn-ending (AP→0).
         self.ap -= ap_cost
         self.overwatch = True
+        self.ap = 0
         return True
 
     def clear_overwatch(self) -> None:

@@ -56,3 +56,10 @@ RELOAD_AP_COST = 1
 # Cover values
 COVER_HALF_DEF = 20  # defense from half cover (crates)
 # COVER_FULL_DEF already exists (40)
+# UI: action bar
+UI_BAR_H = 52
+UI_BTN_W = 150
+UI_BTN_H = 36
+UI_BTN_GAP = 10
+# Vision / Fog of War
+VISION_RANGE_TILES = 12  # how far a unit can see in tiles
